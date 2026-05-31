@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -8,7 +7,8 @@ import os
 
 import pytest
 
-import spack.directives
+import spack.concretize
+import spack.directives_meta
 import spack.paths
 import spack.repo
 import spack.util.package_hash as ph
@@ -20,9 +20,9 @@ datadir = os.path.join(spack.paths.test_path, "data", "unparse")
 
 def compare_sans_name(eq, spec1, spec2):
     content1 = ph.canonical_source(spec1)
-    content1 = content1.replace(spack.repo.path.get_pkg_class(spec1.name).__name__, "TestPackage")
+    content1 = content1.replace(spack.repo.PATH.get_pkg_class(spec1.name).__name__, "TestPackage")
     content2 = ph.canonical_source(spec2)
-    content2 = content2.replace(spack.repo.path.get_pkg_class(spec2.name).__name__, "TestPackage")
+    content2 = content2.replace(spack.repo.PATH.get_pkg_class(spec2.name).__name__, "TestPackage")
     if eq:
         assert content1 == content2
     else:
@@ -31,38 +31,35 @@ def compare_sans_name(eq, spec1, spec2):
 
 def compare_hash_sans_name(eq, spec1, spec2):
     content1 = ph.canonical_source(spec1)
-    pkg_cls1 = spack.repo.path.get_pkg_class(spec1.name)
+    pkg_cls1 = spack.repo.PATH.get_pkg_class(spec1.name)
     content1 = content1.replace(pkg_cls1.__name__, "TestPackage")
     hash1 = pkg_cls1(spec1).content_hash(content=content1)
 
     content2 = ph.canonical_source(spec2)
-    pkg_cls2 = spack.repo.path.get_pkg_class(spec2.name)
+    pkg_cls2 = spack.repo.PATH.get_pkg_class(spec2.name)
     content2 = content2.replace(pkg_cls2.__name__, "TestPackage")
     hash2 = pkg_cls2(spec2).content_hash(content=content2)
 
-    if eq:
-        assert hash1 == hash2
-    else:
-        assert hash1 != hash2
+    assert (hash1 == hash2) == eq
 
 
 def test_hash(mock_packages, config):
-    ph.package_hash(Spec("hash-test1@1.2"))
+    ph.package_hash(Spec("hash-test1@=1.2"))
 
 
 def test_different_variants(mock_packages, config):
-    spec1 = Spec("hash-test1@1.2 +variantx")
-    spec2 = Spec("hash-test1@1.2 +varianty")
+    spec1 = Spec("hash-test1@=1.2 +variantx")
+    spec2 = Spec("hash-test1@=1.2 +varianty")
     assert ph.package_hash(spec1) == ph.package_hash(spec2)
 
 
 def test_all_same_but_name(mock_packages, config):
-    spec1 = Spec("hash-test1@1.2")
-    spec2 = Spec("hash-test2@1.2")
+    spec1 = Spec("hash-test1@=1.2")
+    spec2 = Spec("hash-test2@=1.2")
     compare_sans_name(True, spec1, spec2)
 
-    spec1 = Spec("hash-test1@1.2 +varianty")
-    spec2 = Spec("hash-test2@1.2 +varianty")
+    spec1 = Spec("hash-test1@=1.2 +varianty")
+    spec2 = Spec("hash-test2@=1.2 +varianty")
     compare_sans_name(True, spec1, spec2)
 
 
@@ -70,46 +67,46 @@ def test_all_same_but_archive_hash(mock_packages, config):
     """
     Archive hash is not intended to be reflected in Package hash.
     """
-    spec1 = Spec("hash-test1@1.3")
-    spec2 = Spec("hash-test2@1.3")
+    spec1 = Spec("hash-test1@=1.3")
+    spec2 = Spec("hash-test2@=1.3")
     compare_sans_name(True, spec1, spec2)
 
 
 def test_all_same_but_patch_contents(mock_packages, config):
-    spec1 = Spec("hash-test1@1.1")
-    spec2 = Spec("hash-test2@1.1")
+    spec1 = Spec("hash-test1@=1.1")
+    spec2 = Spec("hash-test2@=1.1")
     compare_sans_name(True, spec1, spec2)
 
 
 def test_all_same_but_patches_to_apply(mock_packages, config):
-    spec1 = Spec("hash-test1@1.4")
-    spec2 = Spec("hash-test2@1.4")
+    spec1 = Spec("hash-test1@=1.4")
+    spec2 = Spec("hash-test2@=1.4")
     compare_sans_name(True, spec1, spec2)
 
 
 def test_all_same_but_install(mock_packages, config):
-    spec1 = Spec("hash-test1@1.5")
-    spec2 = Spec("hash-test2@1.5")
+    spec1 = Spec("hash-test1@=1.5")
+    spec2 = Spec("hash-test2@=1.5")
     compare_sans_name(False, spec1, spec2)
 
 
 def test_content_hash_all_same_but_patch_contents(mock_packages, config):
-    spec1 = Spec("hash-test1@1.1").concretized()
-    spec2 = Spec("hash-test2@1.1").concretized()
+    spec1 = spack.concretize.concretize_one("hash-test1@1.1")
+    spec2 = spack.concretize.concretize_one("hash-test2@1.1")
     compare_hash_sans_name(False, spec1, spec2)
 
 
 def test_content_hash_not_concretized(mock_packages, config):
     """Check that Package.content_hash() works on abstract specs."""
     # these are different due to the package hash
-    spec1 = Spec("hash-test1@1.1")
-    spec2 = Spec("hash-test2@1.3")
+    spec1 = Spec("hash-test1@=1.1")
+    spec2 = Spec("hash-test2@=1.3")
     compare_hash_sans_name(False, spec1, spec2)
 
     # at v1.1 these are actually the same package when @when's are removed
     # and the name isn't considered
-    spec1 = Spec("hash-test1@1.1")
-    spec2 = Spec("hash-test2@1.1")
+    spec1 = Spec("hash-test1@=1.1")
+    spec2 = Spec("hash-test2@=1.1")
     compare_hash_sans_name(True, spec1, spec2)
 
     # these end up being different b/c we can't eliminate much of the package.py
@@ -120,8 +117,8 @@ def test_content_hash_not_concretized(mock_packages, config):
 
 
 def test_content_hash_different_variants(mock_packages, config):
-    spec1 = Spec("hash-test1@1.2 +variantx").concretized()
-    spec2 = Spec("hash-test2@1.2 ~variantx").concretized()
+    spec1 = spack.concretize.concretize_one("hash-test1@1.2 +variantx")
+    spec2 = spack.concretize.concretize_one("hash-test2@1.2 ~variantx")
     compare_hash_sans_name(True, spec1, spec2)
 
 
@@ -135,19 +132,19 @@ def test_content_hash_cannot_get_details_from_ast(mock_packages, config):
     differ where Spack includes a phase on account of AST-examination
     failure.
     """
-    spec3 = Spec("hash-test1@1.7").concretized()
-    spec4 = Spec("hash-test3@1.7").concretized()
+    spec3 = spack.concretize.concretize_one("hash-test1@1.7")
+    spec4 = spack.concretize.concretize_one("hash-test3@1.7")
     compare_hash_sans_name(False, spec3, spec4)
 
 
 def test_content_hash_all_same_but_archive_hash(mock_packages, config):
-    spec1 = Spec("hash-test1@1.3").concretized()
-    spec2 = Spec("hash-test2@1.3").concretized()
+    spec1 = spack.concretize.concretize_one("hash-test1@1.3")
+    spec2 = spack.concretize.concretize_one("hash-test2@1.3")
     compare_hash_sans_name(False, spec1, spec2)
 
 
 def test_content_hash_parse_dynamic_function_call(mock_packages, config):
-    spec = Spec("hash-test4").concretized()
+    spec = spack.concretize.concretize_one("hash-test4")
     spec.package.content_hash()
 
 
@@ -177,6 +174,9 @@ class ManyDocstrings:
     def method2():
         """ELEVEN"""
         return "TWELVE"
+
+def empty_func():
+    """THIRTEEN"""
 '''
 
 many_strings_no_docstrings = """\
@@ -192,6 +192,9 @@ class ManyDocstrings:
 
     def method2():
         return 'TWELVE'
+
+def empty_func():
+    pass
 """
 
 
@@ -214,13 +217,13 @@ class HasManyDirectives:
 
 {directives}
 """.format(
-    directives="\n".join("    %s()" % name for name in spack.directives.directive_names)
+    directives="\n".join("    %s()" % name for name in spack.directives_meta.directive_names)
 )
 
 
 def test_remove_all_directives():
     """Ensure all directives are removed from packages before hashing."""
-    for name in spack.directives.directive_names:
+    for name in spack.directives_meta.directive_names:
         assert name in many_directives
 
     tree = ast.parse(many_directives)
@@ -228,7 +231,7 @@ def test_remove_all_directives():
     tree = ph.RemoveDirectives(spec).visit(tree)
     unparsed = unparse(tree, py_ver_consistent=True)
 
-    for name in spack.directives.directive_names:
+    for name in spack.directives_meta.directive_names:
         assert name not in unparsed
 
 
@@ -238,7 +241,7 @@ class HasManyMetadataAttributes:
     url = "https://example.com/foo.tar.gz"
     git = "https://example.com/foo/bar.git"
 
-    maintainers = ["alice", "bob"]
+    maintainers("alice", "bob")
     tags = ["foo", "bar", "baz"]
 
     depends_on("foo")
@@ -337,20 +340,20 @@ def test_remove_complex_package_logic_filtered():
     "package_spec,expected_hash",
     [
         ("amdfftw", "tivb752zddjgvfkogfs7cnnvp5olj6co"),
-        ("grads", "rrlmwml3f2frdnqavmro3ias66h5b2ce"),
-        ("llvm", "nufffum5dabmaf4l5tpfcblnbfjknvd3"),
+        ("grads", "lomrsppasfxegyamz4r33zgwiqkveftv"),
+        ("llvm", "paicamlvy5jkgxw4xnacaxahrixe3f3i"),
         # has @when("@4.1.0") and raw unicode literals
-        ("mfem", "tiiv7uq7v2xtv24vdij5ptcv76dpazrw"),
-        ("mfem@4.0.0", "tiiv7uq7v2xtv24vdij5ptcv76dpazrw"),
-        ("mfem@4.1.0", "gxastq64to74qt4he4knpyjfdhh5auel"),
+        ("mfem", "slf5qyyyhuj66mo5lpuhkrs35akh2zck"),
+        ("mfem@4.0.0", "slf5qyyyhuj66mo5lpuhkrs35akh2zck"),
+        ("mfem@4.1.0", "6tjbezoh2aquz6gmvoz7jf6j6lib65m2"),
         # has @when("@1.5.0:")
-        ("py-torch", "qs7djgqn7dy7r3ps4g7hv2pjvjk4qkhd"),
-        ("py-torch@1.0", "qs7djgqn7dy7r3ps4g7hv2pjvjk4qkhd"),
-        ("py-torch@1.6", "p4ine4hc6f2ik2f2wyuwieslqbozll5w"),
+        ("py-torch", "m3ucsddqr7hjevtgx4cad34nrtqgyjfg"),
+        ("py-torch@1.0", "m3ucsddqr7hjevtgx4cad34nrtqgyjfg"),
+        ("py-torch@1.6", "insaxs6bq34rvyhajdbyr4wddqeqb2t3"),
         # has a print with multiple arguments
-        ("legion", "zdpawm4avw3fllxcutvmqb5c3bj5twqt"),
+        ("legion", "bq2etsik5l6pbryxmbhfhzynci56ruy4"),
         # has nested `with when()` blocks and loops
-        ("trilinos", "vqrgscjrla4hi7bllink7v6v6dwxgc2p"),
+        ("trilinos", "ojbtbu3p6gpa42sbilblo2ioanvhouxu"),
     ],
 )
 def test_package_hash_consistency(package_spec, expected_hash):
@@ -367,7 +370,7 @@ def test_package_hash_consistency(package_spec, expected_hash):
     """
     spec = Spec(package_spec)
     filename = os.path.join(datadir, "%s.txt" % spec.name)
-    with open(filename) as f:
+    with open(filename, "rb") as f:
         source = f.read()
     h = ph.package_hash(spec, source=source)
     assert expected_hash == h

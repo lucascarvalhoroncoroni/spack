@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -12,7 +11,7 @@ Pop-Location
 Set-Variable -Name python_pf_ver -Value (Get-Command -Name python -ErrorAction SilentlyContinue).Path
 
 # If python_pf_ver is not defined, we cannot find Python on the Path
-# We next look for Spack vendored copys
+# We next look for Spack vendored copies
 if ($null -eq $python_pf_ver)
 {
     $python_pf_ver_list = Resolve-Path -Path "$PWD\Python*"
@@ -35,18 +34,16 @@ if (!$null -eq $py_path)
     $Env:Path = "$py_path;$Env:Path"
 }
 
-if (!$null -eq $py_exe)
-{
-    Invoke-Expression "$py_exe $Env:SPACK_ROOT\bin\haspywin.py"
-    Invoke-Expression "$py_exe $Env:SPACK_ROOT\bin\spack external find python" | Out-Null
-}
-
 $Env:Path = "$Env:SPACK_ROOT\bin;$Env:Path"
 if ($null -eq $Env:EDITOR)
 {
     $Env:EDITOR = "notepad"
 }
 
+# Set spack shell so we can detect powershell context
+$Env:SPACK_SHELL="pwsh"
+
+doskey /exename=powershell.exe spack=$Env:SPACK_ROOT\bin\spack.ps1 $args
 
 Write-Output "*****************************************************************"
 Write-Output "**************** Spack Package Manager **************************"
@@ -57,5 +54,6 @@ function global:prompt
     $pth = $(Convert-Path $(Get-Location)) | Split-Path -leaf
     "[spack] PS $pth>"
 }
+[system.console]::title = "Spack"
 Pop-Location
 

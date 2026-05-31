@@ -1,14 +1,12 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 import os
-import sys
+import pathlib
 
 import pytest
 
-import spack
 import spack.util.module_cmd
 from spack.util.module_cmd import (
     get_path_args_from_module_line,
@@ -17,7 +15,7 @@ from spack.util.module_cmd import (
     path_from_modules,
 )
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Tests fail on Windows")
+pytestmark = pytest.mark.not_on_windows("Tests fail on Windows")
 
 test_module_lines = [
     "prepend-path LD_LIBRARY_PATH /path/to/lib",
@@ -28,21 +26,65 @@ test_module_lines = [
 ]
 
 
-def test_module_function_change_env(tmpdir, working_env):
-    src_file = str(tmpdir.join("src_me"))
-    with open(src_file, "w") as f:
-        f.write("export TEST_MODULE_ENV_VAR=TEST_SUCCESS\n")
-
-    os.environ["NOT_AFFECTED"] = "NOT_AFFECTED"
-    module("load", src_file, module_template=". {0} 2>&1".format(src_file))
-
-    assert os.environ["TEST_MODULE_ENV_VAR"] == "TEST_SUCCESS"
-    assert os.environ["NOT_AFFECTED"] == "NOT_AFFECTED"
+def test_module_function_change_env(tmp_path: pathlib.Path):
+    environb = {b"TEST_MODULE_ENV_VAR": b"TEST_FAIL", b"NOT_AFFECTED": b"NOT_AFFECTED"}
+    src_file = tmp_path / "src_me"
+    src_file.write_text("export TEST_MODULE_ENV_VAR=TEST_SUCCESS\n")
+    module("load", str(src_file), module_template=f". {src_file} 2>&1", environb=environb)
+    assert environb[b"TEST_MODULE_ENV_VAR"] == b"TEST_SUCCESS"
+    assert environb[b"NOT_AFFECTED"] == b"NOT_AFFECTED"
 
 
-def test_module_function_no_change(tmpdir):
-    src_file = str(tmpdir.join("src_me"))
-    with open(src_file, "w") as f:
+def test_module_function_change_env_with_module_src_cmd(tmp_path: pathlib.Path):
+    environb = {
+        b"MODULESHOME": b"here",
+        b"TEST_MODULE_ENV_VAR": b"TEST_FAIL",
+        b"TEST_ANOTHER_MODULE_ENV_VAR": b"TEST_FAIL",
+        b"NOT_AFFECTED": b"NOT_AFFECTED",
+    }
+    src_file = tmp_path / "src_me"
+    src_file.write_text("export TEST_MODULE_ENV_VAR=TEST_SUCCESS\n")
+    module_src_file = tmp_path / "src_me_too"
+    module_src_file.write_text("export TEST_ANOTHER_MODULE_ENV_VAR=TEST_SUCCESS\n")
+    module("load", str(src_file), module_template=f". {src_file} 2>&1", environb=environb)
+    module(
+        "load",
+        str(src_file),
+        module_template=f". {src_file} 2>&1",
+        module_src_cmd=f". {module_src_file} 2>&1; ",
+        environb=environb,
+    )
+    assert environb[b"TEST_MODULE_ENV_VAR"] == b"TEST_SUCCESS"
+    assert environb[b"TEST_ANOTHER_MODULE_ENV_VAR"] == b"TEST_SUCCESS"
+    assert environb[b"NOT_AFFECTED"] == b"NOT_AFFECTED"
+
+
+def test_module_function_change_env_without_moduleshome_no_module_src_cmd(tmp_path: pathlib.Path):
+    environb = {
+        b"TEST_MODULE_ENV_VAR": b"TEST_FAIL",
+        b"TEST_ANOTHER_MODULE_ENV_VAR": b"TEST_FAIL",
+        b"NOT_AFFECTED": b"NOT_AFFECTED",
+    }
+    src_file = tmp_path / "src_me"
+    src_file.write_text("export TEST_MODULE_ENV_VAR=TEST_SUCCESS\n")
+    module_src_file = tmp_path / "src_me_too"
+    module_src_file.write_text("export TEST_ANOTHER_MODULE_ENV_VAR=TEST_SUCCESS\n")
+    module("load", str(src_file), module_template=f". {src_file} 2>&1", environb=environb)
+    module(
+        "load",
+        str(src_file),
+        module_template=f". {src_file} 2>&1",
+        module_src_cmd=f". {module_src_file} 2>&1; ",
+        environb=environb,
+    )
+    assert environb[b"TEST_MODULE_ENV_VAR"] == b"TEST_SUCCESS"
+    assert environb[b"TEST_ANOTHER_MODULE_ENV_VAR"] == b"TEST_FAIL"
+    assert environb[b"NOT_AFFECTED"] == b"NOT_AFFECTED"
+
+
+def test_module_function_no_change(tmp_path: pathlib.Path):
+    src_file = str(tmp_path / "src_me")
+    with open(src_file, "w", encoding="utf-8") as f:
         f.write("echo TEST_MODULE_FUNCTION_PRINT")
 
     old_env = os.environ.copy()

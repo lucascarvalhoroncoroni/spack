@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -7,12 +6,14 @@
 This module contains routines related to the module command for accessing and
 parsing environment modules.
 """
+
 import os
 import re
 import subprocess
-import sys
+from typing import MutableMapping, Optional
 
-import llnl.util.tty as tty
+import spack.llnl.util.tty as tty
+from spack.error import SpackError
 
 # This list is not exhaustive. Currently we only use load and unload
 # If we need another option that changes the environment, add it here.
@@ -22,8 +23,27 @@ module_change_commands = ["load", "swap", "unload", "purge", "use", "unuse"]
 awk_cmd = r"""awk 'BEGIN{for(name in ENVIRON)""" r"""printf("%s=%s%c", name, ENVIRON[name], 0)}'"""
 
 
-def module(*args, **kwargs):
-    module_cmd = kwargs.get("module_template", "module " + " ".join(args))
+def module(
+    *args: str,
+    module_template: Optional[str] = None,
+    module_src_cmd: Optional[str] = None,
+    environb: Optional[MutableMapping[bytes, bytes]] = None,
+):
+    """Run the ``module`` shell function in a ``/bin/bash`` subprocess, and either collect its
+    changes to environment variables and apply them in the current process (for ``module load``,
+    ``module swap``, etc.), or return its output as a string (for ``module show``, etc.).
+
+    This requires ``/bin/bash`` to be available on the system and ``awk`` to be in ``PATH``.
+
+    Args:
+        args: Command line arguments for the module command.
+        environb: (Binary) environment variables dictionary. If not provided, the current
+            process's environment is modified.
+    """
+    module_cmd = module_template or ("module " + " ".join(args))
+    environb = environb or os.environb
+    if b"MODULESHOME" in environb:
+        module_cmd = module_src_cmd or "source $MODULESHOME/init/bash; " + module_cmd
 
     if args[0] in module_change_commands:
         # Suppress module output
@@ -34,10 +54,10 @@ def module(*args, **kwargs):
             stderr=subprocess.STDOUT,
             shell=True,
             executable="/bin/bash",
+            env=environb,
         )
 
-        # In Python 3, keys and values of `environ` are byte strings.
-        environ = {}
+        new_environb = {}
         output = module_p.communicate()[0]
 
         # Loop over each environment variable key=value byte string
@@ -46,14 +66,11 @@ def module(*args, **kwargs):
             parts = entry.split(b"=", 1)
             if len(parts) != 2:
                 continue
-            environ[parts[0]] = parts[1]
+            new_environb[parts[0]] = parts[1]
 
         # Update os.environ with new dict
-        os.environ.clear()
-        if sys.version_info >= (3, 2):
-            os.environb.update(environ)  # novermin
-        else:
-            os.environ.update(environ)
+        environb.clear()
+        environb.update(new_environb)  # novermin
 
     else:
         # Simply execute commands that don't change state and return output
@@ -72,6 +89,9 @@ def load_module(mod):
     """Takes a module name and removes modules until it is possible to
     load that module. It then loads the provided module. Depends on the
     modulecmd implementation of modules used in cray and lmod.
+
+    Raises:
+        ModuleLoadError: if the module could not be loaded
     """
     tty.debug("module_cmd.load_module: {0}".format(mod))
     # Read the module and remove any conflicting modules
@@ -83,9 +103,19 @@ def load_module(mod):
         if word == "conflict":
             module("unload", text[i + 1])
 
+    # Store the LOADEDMODULES before trying to load the new module
+    loaded_modules_before = os.environ.get("LOADEDMODULES", "")
+
     # Load the module now that there are no conflicts
     # Some module systems use stdout and some use stderr
     module("load", mod)
+
+    # Check if the module was actually loaded by comparing LOADEDMODULES
+    loaded_modules_after = os.environ.get("LOADEDMODULES", "")
+
+    # If LOADEDMODULES didn't change, the module wasn't loaded
+    if loaded_modules_before == loaded_modules_after:
+        raise ModuleLoadError(mod)
 
 
 def get_path_args_from_module_line(line):
@@ -102,7 +132,7 @@ def get_path_args_from_module_line(line):
         words_and_symbols = line.split(lua_quote)
         path_arg = words_and_symbols[-2]
     else:
-        # The path arg is the 3rd "word" of the line in a TCL module
+        # The path arg is the 3rd "word" of the line in a Tcl module
         # OPERATION VAR_NAME PATH_ARG
         words = line.split()
         if len(words) > 2:
@@ -115,7 +145,7 @@ def get_path_args_from_module_line(line):
 
 
 def path_from_modules(modules):
-    """Inspect a list of TCL modules for entries that indicate the absolute
+    """Inspect a list of Tcl modules for entries that indicate the absolute
     path at which the library supported by said module can be found.
 
     Args:
@@ -133,7 +163,7 @@ def path_from_modules(modules):
         candidate_path = get_path_from_module_contents(text, module_name)
 
         if candidate_path and not os.path.exists(candidate_path):
-            msg = "Extracted path from module does not exist " "[module={0}, path={1}]"
+            msg = "Extracted path from module does not exist [module={0}, path={1}]"
             tty.warn(msg.format(module_name, candidate_path))
 
         # If anything is found, then it's the best choice. This means
@@ -173,7 +203,7 @@ def get_path_from_module_contents(text, module_name):
     def match_flag_and_strip(line, flag, strip=[]):
         flag_idx = line.find(flag)
         if flag_idx >= 0:
-            # Search for the first occurence of any separator marking the end of
+            # Search for the first occurrence of any separator marking the end of
             # the path.
             separators = (" ", '"', "'")
             occurrences = [line.find(s, flag_idx) for s in separators]
@@ -222,3 +252,10 @@ def get_path_from_module_contents(text, module_name):
 
     # Unable to find path in module
     return None
+
+
+class ModuleLoadError(SpackError):
+    """Raised when a module cannot be loaded."""
+
+    def __init__(self, module):
+        super().__init__(f"Module '{module}' could not be loaded.")

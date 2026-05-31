@@ -1,9 +1,7 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 import re
-import sys
 
 import pytest
 
@@ -98,13 +96,9 @@ def test_url_list(mock_packages):
 def test_url_summary(mock_packages):
     """Test the URL summary command."""
     # test url_summary, the internal function that does the work
-    (
-        total_urls,
-        correct_names,
-        correct_versions,
-        name_count_dict,
-        version_count_dict,
-    ) = url_summary(None)
+    (total_urls, correct_names, correct_versions, name_count_dict, version_count_dict) = (
+        url_summary(None)
+    )
 
     assert 0 < correct_names <= sum(name_count_dict.values()) <= total_urls
     assert 0 < correct_versions <= sum(version_count_dict.values()) <= total_urls
@@ -121,31 +115,29 @@ def test_url_summary(mock_packages):
     assert out_correct_versions == correct_versions
 
 
-@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unsupported on Windows for now")
-def test_url_stats(capfd, mock_packages):
-    with capfd.disabled():
-        output = url("stats")
-        npkgs = "%d packages" % len(spack.repo.all_package_names())
-        assert npkgs in output
-        assert "url" in output
-        assert "git" in output
-        assert "schemes" in output
-        assert "versions" in output
-        assert "resources" in output
+def test_url_stats(mock_packages):
+    output = url("stats")
+    npkgs = "%d packages" % len(spack.repo.all_package_names())
+    assert npkgs in output
+    assert "url" in output
+    assert "git" in output
+    assert "schemes" in output
+    assert "versions" in output
+    assert "resources" in output
 
-        output = url("stats", "--show-issues")
-        npkgs = "%d packages" % len(spack.repo.all_package_names())
-        assert npkgs in output
-        assert "url" in output
-        assert "git" in output
-        assert "schemes" in output
-        assert "versions" in output
-        assert "resources" in output
+    output = url("stats", "--show-issues")
+    npkgs = "%d packages" % len(spack.repo.all_package_names())
+    assert npkgs in output
+    assert "url" in output
+    assert "git" in output
+    assert "schemes" in output
+    assert "versions" in output
+    assert "resources" in output
 
-        assert "Package URLs with md5 hashes" in output
-        assert "needs-relocation" in output
-        assert "https://cmake.org/files/v3.4/cmake-0.0.0.tar.gz" in output
+    assert "Package URLs with md5 hashes" in output
+    assert "needs-relocation" in output
+    assert "https://cmake.org/files/v3.4/cmake-0.0.0.tar.gz" in output
 
-        assert "Package URLs with http urls" in output
-        assert "zmpi" in output
-        assert "http://www.spack-fake-zmpi.org/downloads/zmpi-1.0.tar.gz" in output
+    assert "Package URLs with http urls" in output
+    assert "zmpi" in output
+    assert "http://www.spack-fake-zmpi.org/downloads/zmpi-1.0.tar.gz" in output

@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -227,7 +226,7 @@ function check_sp_flags -d "check spack flags for h/V flags"
     # Check if inputs contain h or V flags.
     #
 
-    # combine argument array into single string (space seperated), to be passed
+    # combine argument array into single string (space separated), to be passed
     # to regular expression matching (`string match -r`)
     set -l _a "$argv"
 
@@ -246,7 +245,7 @@ end
 
 
 
-function match_flag -d "checks all combinations of flags ocurring inside of a string"
+function match_flag -d "checks all combinations of flags occurring inside of a string"
 
     # Remove leading and trailing spaces -- but we need to insert a "guard" (x)
     # so that eg. `string trim -h` doesn't trigger the help string for `string trim`
@@ -267,7 +266,7 @@ function match_flag -d "checks all combinations of flags ocurring inside of a st
         return 0
     end
 
-    # end of string + leadingg space
+    # end of string + leading space
     if echo "$_a" | string match -r -q " +$_b\$"
         return 0
     end
@@ -288,7 +287,7 @@ function check_env_activate_flags -d "check spack env subcommand flags for -h, -
     # Check if inputs contain -h/--help, --sh, --csh, or --fish
     #
 
-    # combine argument array into single string (space seperated), to be passed
+    # combine argument array into single string (space separated), to be passed
     # to regular expression matching (`string match -r`)
     set -l _a "$argv"
 
@@ -336,7 +335,7 @@ function check_env_deactivate_flags -d "check spack env subcommand flags for --s
     # Check if inputs contain --sh, --csh, or --fish
     #
 
-    # combine argument array into single string (space seperated), to be passed
+    # combine argument array into single string (space separated), to be passed
     # to regular expression matching (`string match -r`)
     set -l _a "$argv"
 
@@ -372,7 +371,14 @@ end
 
 
 function spack_runner -d "Runner function for the `spack` wrapper"
-
+    # Store DYLD_* variables from spack shell function
+    # This is necessary because MacOS System Integrity Protection clears
+    # variables that affect dyld on process start.
+    for var in DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
+        if set -q $var
+            set -gx SPACK_$var $$var
+        end
+    end
 
     #
     # Accumulate initial flags for main spack command
@@ -449,7 +455,7 @@ function spack_runner -d "Runner function for the `spack` wrapper"
 
         # CASE: spack subcommand is `env`. Here we get the spack runtime to
         # supply the appropriate shell commands for setting the environment
-        # varibles. These commands are then run by fish (using the `capture_all`
+        # variables. These commands are then run by fish (using the `capture_all`
         # function, instead of a command substitution).
 
         case "env"
@@ -593,7 +599,7 @@ set -l stat $status
 
 
 #
-# Delete temprary global variabels allocated in `allocated_sp_shared`.
+# Delete temporary global variables allocated in `allocated_sp_shared`.
 #
 
 delete_sp_shared
@@ -637,14 +643,14 @@ function spack_pathadd -d "Add path to specified variable (defaults to PATH)"
     #  -> Notes: [1] (cf. EOF).
     if test -d "$pa_new_path"
 
-        # combine argument array into single string (space seperated), to be
+        # combine argument array into single string (space separated), to be
         # passed to regular expression matching (`string match -r`)
         set -l _a "$pa_oldvalue"
 
-        # skip path if it is already contained in the variable
+        # skip path if it is already the first in the variable
         # note spaces in regular expression: we're matching to a space delimited
         # list of paths
-        if not echo $_a | string match -q -r " *$pa_new_path *"
+        if not echo $_a | string match -q -r "^$pa_new_path *"
             if test -n "$pa_oldvalue"
                 set $pa_varname $pa_new_path $pa_oldvalue
             else
@@ -710,19 +716,9 @@ set -xg _sp_shell "fish"
 
 
 
-if test -z "$SPACK_SKIP_MODULES"
+if test -z "$SPACK_SKIP_MODULES"; and begin; type -q module; or type -q use; end
     #
-    # Check whether we need environment-variables (module) <= `use` is not available
-    #
-    set -l need_module "no"
-    if not functions -q use; and not functions -q module
-        set need_module "yes"
-    end
-
-
-
-    #
-    # Make environment-modules available to shell
+    # Make shell vars available to fish
     #
     function sp_apply_shell_vars -d "applies expressions of the type `a='b'` as `set a b`"
 
@@ -734,34 +730,10 @@ if test -z "$SPACK_SKIP_MODULES"
         set -xg $expr_token[1] (string split ":" $expr_token[2])
     end
 
+    set -l sp_shell_vars (command spack --print-shell-vars sh)
 
-    if test "$need_module" = "yes"
-        set -l sp_shell_vars (command spack --print-shell-vars sh,modules)
-
-        for sp_var_expr in $sp_shell_vars
-            sp_apply_shell_vars $sp_var_expr
-        end
-
-        # _sp_module_prefix is set by spack --print-sh-vars
-        if test "$_sp_module_prefix" != "not_installed"
-            set -xg MODULE_PREFIX $_sp_module_prefix
-            spack_pathadd PATH "$MODULE_PREFIX/bin"
-        end
-
-    else
-
-        set -l sp_shell_vars (command spack --print-shell-vars sh)
-
-        for sp_var_expr in $sp_shell_vars
-            sp_apply_shell_vars $sp_var_expr
-        end
-
-    end
-
-    if test "$need_module" = "yes"
-        function module -d "wrapper for the `module` command to point at Spack's modules instance" --inherit-variable MODULE_PREFIX
-            eval $MODULE_PREFIX/bin/modulecmd $SPACK_SHELL $argv
-        end
+    for sp_var_expr in $sp_shell_vars
+        sp_apply_shell_vars $sp_var_expr
     end
 
 
@@ -778,7 +750,14 @@ if test -z "$SPACK_SKIP_MODULES"
     sp_multi_pathadd MODULEPATH $_sp_tcl_roots
 end
 
+# Add programmable tab completion for fish
+#
+set -l fish_version (string split '.' $FISH_VERSION)
+if test $fish_version[1] -gt 3
+    or begin ; test $fish_version[1] -eq 3 ; and test $fish_version[2] -ge 2 ; end
 
+    source $sp_share_dir/spack-completion.fish
+end
 
 #
 # NOTES
@@ -792,7 +771,7 @@ end
 #      prepend a non-flag character, eg: `test "x$a" = "x$b"`.
 #
 # [3]: When the test in the if statement fails, the `status` flag is set to 1.
-#      `true` here manuallt resets the value of `status` to 0. Since `set`
+#      `true` here manually resets the value of `status` to 0. Since `set`
 #      passes `status` along, we thus avoid the function returning 1 by mistake.
 
 # done: unset sentinel variable as we're no longer initializing

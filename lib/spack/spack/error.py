@@ -1,18 +1,22 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-from __future__ import print_function
-
-import inspect
 import sys
+from typing import Optional
 
-import llnl.util.tty as tty
+import spack.llnl.util.tty as tty
 
 #: at what level we should write stack traces or short error messages
 #: this is module-scoped because it needs to be set very early
 debug = 0
+
+#: whether to show a backtrace when an error is printed, enabled with ``--backtrace``.
+SHOW_BACKTRACE = False
+
+
+class SpackAPIWarning(UserWarning):
+    """Warning that formats with file and line number."""
 
 
 class SpackError(Exception):
@@ -20,8 +24,8 @@ class SpackError(Exception):
     Subclasses can be found in the modules they have to do with.
     """
 
-    def __init__(self, message, long_message=None):
-        super(SpackError, self).__init__()
+    def __init__(self, message: str, long_message: Optional[str] = None) -> None:
+        super().__init__()
         self.message = message
         self._long_message = long_message
 
@@ -74,16 +78,13 @@ class SpackError(Exception):
         sys.exit(1)
 
     def __str__(self):
-        msg = self.message
         if self._long_message:
-            msg += "\n    %s" % self._long_message
-        return msg
+            return f"{self.message}\n    {self._long_message}"
+        return self.message
 
     def __repr__(self):
-        args = [repr(self.message), repr(self.long_message)]
-        args = ",".join(args)
-        qualified_name = inspect.getmodule(self).__name__ + "." + type(self).__name__
-        return qualified_name + "(" + args + ")"
+        qualified_name = type(self).__module__ + "." + type(self).__name__
+        return f"{qualified_name}({repr(self.message)}, {repr(self.long_message)})"
 
     def __reduce__(self):
         return type(self), (self.message, self.long_message)
@@ -93,14 +94,14 @@ class UnsupportedPlatformError(SpackError):
     """Raised by packages when a platform is not supported"""
 
     def __init__(self, message):
-        super(UnsupportedPlatformError, self).__init__(message)
+        super().__init__(message)
 
 
 class NoLibrariesError(SpackError):
     """Raised when package libraries are requested but cannot be found"""
 
     def __init__(self, message_or_name, prefix=None):
-        super(NoLibrariesError, self).__init__(
+        super().__init__(
             message_or_name
             if prefix is None
             else "Unable to locate {0} libraries in {1}".format(message_or_name, prefix)
@@ -115,6 +116,10 @@ class SpecError(SpackError):
     """Superclass for all errors that occur while constructing specs."""
 
 
+class InvalidVirtualOnEdgeError(SpecError):
+    """Raised when an edge requires a virtual that does not exist in the repository."""
+
+
 class UnsatisfiableSpecError(SpecError):
     """
     Raised when a spec conflicts with package constraints.
@@ -125,10 +130,101 @@ class UnsatisfiableSpecError(SpecError):
 
     def __init__(self, provided, required, constraint_type):
         # This is only the entrypoint for old concretizer errors
-        super(UnsatisfiableSpecError, self).__init__(
-            "%s does not satisfy %s" % (provided, required)
-        )
+        super().__init__("%s does not satisfy %s" % (provided, required))
 
         self.provided = provided
         self.required = required
         self.constraint_type = constraint_type
+
+
+class FetchError(SpackError):
+    """Superclass for fetch-related errors."""
+
+
+class NoSuchPatchError(SpackError):
+    """Raised when a patch file doesn't exist."""
+
+
+class PatchDirectiveError(SpackError):
+    """Raised when the wrong arguments are suppled to the patch directive."""
+
+
+class PatchLookupError(NoSuchPatchError):
+    """Raised when a patch file cannot be located from sha256."""
+
+
+class SpecSyntaxError(Exception):
+    """Base class for Spec syntax errors"""
+
+
+class PackageError(SpackError):
+    """Raised when something is wrong with a package definition."""
+
+    def __init__(self, message, long_msg=None):
+        super().__init__(message, long_msg)
+
+
+class NoURLError(PackageError):
+    """Raised when someone tries to build a URL for a package with no URLs."""
+
+    def __init__(self, cls):
+        super().__init__("Package %s has no version with a URL." % cls.__name__)
+
+
+class InstallError(SpackError):
+    """Raised when something goes wrong during install or uninstall.
+
+    The error can be annotated with a ``pkg`` attribute to allow the
+    caller to get the package for which the exception was raised.
+    """
+
+    def __init__(self, message, long_msg=None, pkg=None):
+        super().__init__(message, long_msg)
+        self.pkg = pkg
+
+
+class ConfigError(SpackError):
+    """Superclass for all Spack config related errors."""
+
+
+class StopPhase(SpackError):
+    """Pickle-able exception to control stopped builds."""
+
+    def __reduce__(self):
+        return _make_stop_phase, (self.message, self.long_message)
+
+
+def _make_stop_phase(msg, long_msg):
+    return StopPhase(msg, long_msg)
+
+
+class MirrorError(SpackError):
+    """Superclass of all mirror-creation related errors."""
+
+    def __init__(self, msg, long_msg=None):
+        super().__init__(msg, long_msg)
+
+
+class NoChecksumException(SpackError):
+    """
+    Raised if file fails checksum verification.
+    """
+
+    def __init__(self, path, size, contents, algorithm, expected, computed):
+        super().__init__(
+            f"{algorithm} checksum failed for {path}",
+            f"Expected {expected} but got {computed}. "
+            f"File size = {size} bytes. Contents = {contents!r}",
+        )
+
+
+class CompilerError(SpackError):
+    """Raised if something goes wrong when probing or querying a compiler."""
+
+
+class SpecFilenameError(SpecError):
+    """Raised when a spec file name is invalid."""
+
+
+class NoSuchSpecFileError(SpecFilenameError):
+    """Raised when a spec file doesn't exist."""

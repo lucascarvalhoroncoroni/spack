@@ -1,11 +1,13 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 """Package that provides functions and classes to
 generate container recipes from a Spack environment
 """
+
 import warnings
+
+import spack.vendor.jsonschema
 
 import spack.environment as ev
 import spack.schema.env as env
@@ -31,18 +33,16 @@ def validate(configuration_file):
     Returns:
         A sanitized copy of the configuration stored in the input file
     """
-    import jsonschema
-
-    with open(configuration_file) as f:
+    with open(configuration_file, encoding="utf-8") as f:
         config = syaml.load(f)
 
     # Ensure we have a "container" attribute with sensible defaults set
-    env_dict = ev.config_dict(config)
+    env_dict = config[ev.TOP_LEVEL_KEY]
     env_dict.setdefault(
-        "container", {"format": "docker", "images": {"os": "ubuntu:18.04", "spack": "develop"}}
+        "container", {"format": "docker", "images": {"os": "ubuntu:22.04", "spack": "develop"}}
     )
     env_dict["container"].setdefault("format", "docker")
-    env_dict["container"].setdefault("images", {"os": "ubuntu:18.04", "spack": "develop"})
+    env_dict["container"].setdefault("images", {"os": "ubuntu:22.04", "spack": "develop"})
 
     # Remove attributes that are not needed / allowed in the
     # container recipe
@@ -58,7 +58,7 @@ def validate(configuration_file):
     # Set the default value of the concretization strategy to unify and
     # warn if the user explicitly set another value
     env_dict.setdefault("concretizer", {"unify": True})
-    if not env_dict["concretizer"]["unify"] is True:
+    if env_dict["concretizer"]["unify"] is not True:
         warnings.warn(
             '"concretizer:unify" is not set to "true", which means the '
             "generated image may contain different variants of the same "
@@ -84,5 +84,5 @@ def validate(configuration_file):
         )
         warnings.warn(msg)
 
-    jsonschema.validate(config, schema=env.schema)
+    spack.vendor.jsonschema.validate(config, schema=env.schema)
     return config

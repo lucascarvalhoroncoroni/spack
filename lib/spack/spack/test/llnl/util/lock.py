@@ -1,27 +1,12 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 """These tests ensure that our lock works correctly.
 
-This can be run in two ways.
+Run with pytest::
 
-First, it can be run as a node-local test, with a typical invocation like
-this::
-
-    spack test lock
-
-You can *also* run it as an MPI program, which allows you to test locks
-across nodes.  So, e.g., you can run the test like this::
-
-    mpirun -n 7 spack test lock
-
-And it will test locking correctness among MPI processes.  Ideally, you
-want the MPI processes to span across multiple nodes, so, e.g., for SLURM
-you might do this::
-
-    srun -N 7 -n 7 -m cyclic spack test lock
+    pytest lib/spack/spack/test/llnl/util/lock.py
 
 You can use this to test whether your shared filesystem properly supports
 POSIX reader-writer locking with byte ranges through fcntl.
@@ -37,16 +22,17 @@ If you want to test on multiple filesystems, you can modify the
 
 Add names and paths for your preferred filesystem mounts to test on them;
 the tests are parametrized to run on all the filesystems listed in this
-dict.  Note that 'tmp' will be skipped for MPI testing, as it is often a
-node-local filesystem, and multi-node tests will fail if the locks aren't
-actually on a shared filesystem.
+dict.
 
 """
+
 import collections
 import errno
 import getpass
 import glob
+import multiprocessing
 import os
+import pathlib
 import shutil
 import socket
 import stat
@@ -54,19 +40,17 @@ import sys
 import tempfile
 import traceback
 from contextlib import contextmanager
-from multiprocessing import Process, Queue
+from multiprocessing import Barrier, Process, Queue
 
 import pytest
 
-import llnl.util.lock as lk
-import llnl.util.multiproc as mp
-from llnl.util.filesystem import getuid, touch
+import spack.llnl.util.lock as lk
+from spack.llnl.util.filesystem import getuid, touch, working_dir
 
-is_windows = sys.platform == "win32"
-if not is_windows:
+if sys.platform != "win32":
     import fcntl
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")
+pytestmark = pytest.mark.not_on_windows("does not run on windows")
 
 
 #
@@ -95,28 +79,26 @@ except ImportError:
     pass
 
 
-"""This is a list of filesystem locations to test locks in.  Paths are
-expanded so that %u is replaced with the current username. '~' is also
-legal and will be expanded to the user's home directory.
-
-Tests are skipped for directories that don't exist, so you'll need to
-update this with the locations of NFS, Lustre, and other mounts on your
-system.
-"""
+#: This is a list of filesystem locations to test locks in.  Paths are
+#: expanded so that %u is replaced with the current username. '~' is also
+#: legal and will be expanded to the user's home directory.
+#:
+#: Tests are skipped for directories that don't exist, so you'll need to
+#: update this with the locations of NFS, Lustre, and other mounts on your
+#: system.
 locations = [
     tempfile.gettempdir(),
     os.path.join("/nfs/tmp2/", getpass.getuser()),
     os.path.join("/p/lscratch*/", getpass.getuser()),
 ]
 
-"""This is the longest a failed multiproc test will take.
-Barriers will time out and raise an exception after this interval.
-In MPI mode, barriers don't time out (they hang).  See mpi_multiproc_test.
-"""
+#: This is the longest a failed multiproc test will take.
+#: Barriers will time out and raise an exception after this interval.
+#: In MPI mode, barriers don't time out (they hang).  See mpi_multiproc_test.
 barrier_timeout = 5
 
-"""This is the lock timeout for expected failures.
-This may need to be higher for some filesystems."""
+#: This is the lock timeout for expected failures.
+#: This may need to be higher for some filesystems.
 lock_fail_timeout = 0.1
 
 
@@ -127,7 +109,7 @@ def make_readable(*paths):
     # stat.S_IREAD constants or a corresponding integer value). All other
     # bits are ignored."
     for path in paths:
-        if not is_windows:
+        if sys.platform != "win32":
             mode = 0o555 if os.path.isdir(path) else 0o444
         else:
             mode = stat.S_IREAD
@@ -136,7 +118,7 @@ def make_readable(*paths):
 
 def make_writable(*paths):
     for path in paths:
-        if not is_windows:
+        if sys.platform != "win32":
             mode = 0o755 if os.path.isdir(path) else 0o744
         else:
             mode = stat.S_IWRITE
@@ -233,7 +215,7 @@ def test_poll_interval_generator():
 
 def local_multiproc_test(*functions, **kwargs):
     """Order some processes using simple barrier synchronization."""
-    b = mp.Barrier(len(functions), timeout=barrier_timeout)
+    b = Barrier(len(functions), timeout=barrier_timeout)
 
     args = (b,) + tuple(kwargs.get("extra_args", ()))
     procs = [Process(target=f, args=args, name=f.__name__) for f in functions]
@@ -267,7 +249,7 @@ def mpi_multiproc_test(*functions):
     include = comm.rank < len(functions)
     subcomm = comm.Split(include)
 
-    class subcomm_barrier(object):
+    class subcomm_barrier:
         """Stand-in for multiproc barrier for MPI-parallel jobs."""
 
         def wait(self):
@@ -288,16 +270,15 @@ def mpi_multiproc_test(*functions):
     comm.Barrier()  # barrier after each MPI test.
 
 
-"""``multiproc_test()`` should be called by tests below.
-``multiproc_test()`` will work for either MPI runs or for local runs.
-"""
+#: ``multiproc_test()`` should be called by tests below.
+#: ``multiproc_test()`` will work for either MPI runs or for local runs.
 multiproc_test = mpi_multiproc_test if mpi else local_multiproc_test
 
 
 #
 # Process snippets below can be composed into tests.
 #
-class AcquireWrite(object):
+class AcquireWrite:
     def __init__(self, lock_path, start=0, length=0):
         self.lock_path = lock_path
         self.start = start
@@ -308,13 +289,13 @@ class AcquireWrite(object):
         return self.__class__.__name__
 
     def __call__(self, barrier):
-        lock = lk.Lock(self.lock_path, self.start, self.length)
+        lock = lk.Lock(self.lock_path, start=self.start, length=self.length)
         lock.acquire_write()  # grab exclusive lock
         barrier.wait()
         barrier.wait()  # hold the lock until timeout in other procs.
 
 
-class AcquireRead(object):
+class AcquireRead:
     def __init__(self, lock_path, start=0, length=0):
         self.lock_path = lock_path
         self.start = start
@@ -325,13 +306,13 @@ class AcquireRead(object):
         return self.__class__.__name__
 
     def __call__(self, barrier):
-        lock = lk.Lock(self.lock_path, self.start, self.length)
+        lock = lk.Lock(self.lock_path, start=self.start, length=self.length)
         lock.acquire_read()  # grab shared lock
         barrier.wait()
         barrier.wait()  # hold the lock until timeout in other procs.
 
 
-class TimeoutWrite(object):
+class TimeoutWrite:
     def __init__(self, lock_path, start=0, length=0):
         self.lock_path = lock_path
         self.start = start
@@ -342,14 +323,14 @@ class TimeoutWrite(object):
         return self.__class__.__name__
 
     def __call__(self, barrier):
-        lock = lk.Lock(self.lock_path, self.start, self.length)
+        lock = lk.Lock(self.lock_path, start=self.start, length=self.length)
         barrier.wait()  # wait for lock acquire in first process
         with pytest.raises(lk.LockTimeoutError):
             lock.acquire_write(lock_fail_timeout)
         barrier.wait()
 
 
-class TimeoutRead(object):
+class TimeoutRead:
     def __init__(self, lock_path, start=0, length=0):
         self.lock_path = lock_path
         self.start = start
@@ -360,7 +341,7 @@ class TimeoutRead(object):
         return self.__class__.__name__
 
     def __call__(self, barrier):
-        lock = lk.Lock(self.lock_path, self.start, self.length)
+        lock = lk.Lock(self.lock_path, start=self.start, length=self.length)
         barrier.wait()  # wait for lock acquire in first process
         with pytest.raises(lk.LockTimeoutError):
             lock.acquire_read(lock_fail_timeout)
@@ -616,7 +597,7 @@ def test_read_lock_read_only_dir_writable_lockfile(lock_dir, lock_path):
             pass
 
 
-@pytest.mark.skipif(False if is_windows else getuid() == 0, reason="user is root")
+@pytest.mark.skipif(False if sys.platform == "win32" else getuid() == 0, reason="user is root")
 def test_read_lock_no_lockfile(lock_dir, lock_path):
     """read-only directory, no lockfile (so can't create)."""
     with read_only(lock_dir):
@@ -650,24 +631,55 @@ def test_upgrade_read_to_write(private_lock_path):
     lock.acquire_read()
     assert lock._reads == 1
     assert lock._writes == 0
-    assert lock._file.mode == "r+"
+    assert lock._file_ref.fh.mode == "rb+"
 
     lock.acquire_write()
     assert lock._reads == 1
     assert lock._writes == 1
-    assert lock._file.mode == "r+"
+    assert lock._file_ref.fh.mode == "rb+"
 
     lock.release_write()
     assert lock._reads == 1
     assert lock._writes == 0
-    assert lock._file.mode == "r+"
+    assert lock._file_ref.fh.mode == "rb+"
 
     lock.release_read()
     assert lock._reads == 0
     assert lock._writes == 0
-    assert lock._file is None
+    assert not lock._file_ref.fh.closed  # recycle the file handle for next lock
 
 
+def test_release_write_downgrades_to_shared(private_lock_path):
+    """Releasing a write lock while a read lock is held must downgrade the POSIX lock
+    from exclusive to shared, allowing other processes to acquire read locks."""
+    lock = lk.Lock(private_lock_path)
+    lock.acquire_read()
+    lock.acquire_write()
+    lock.release_write()
+    assert lock._reads == 1
+    assert lock._writes == 0
+
+    ctx = multiprocessing.get_context()
+    q = ctx.Queue()
+
+    # Another process must be able to acquire a shared read lock concurrently.
+    p = ctx.Process(target=_child_try_acquire_read, args=(private_lock_path, q))
+    p.start()
+    p.join()
+    assert q.get() is True
+
+    # But must not be able to acquire an exclusive write lock.
+    p = ctx.Process(target=_child_try_acquire_write, args=(private_lock_path, q))
+    p.start()
+    p.join()
+    assert q.get() is False
+
+    lock.release_read()
+    assert lock._reads == 0
+    assert lock._writes == 0
+
+
+@pytest.mark.skipif(getuid() == 0, reason="user is root")
 def test_upgrade_read_to_write_fails_with_readonly_file(private_lock_path):
     """Test that read-only file can be read-locked but not write-locked."""
     # ensure lock file exists the first time
@@ -682,15 +694,14 @@ def test_upgrade_read_to_write_fails_with_readonly_file(private_lock_path):
         lock.acquire_read()
         assert lock._reads == 1
         assert lock._writes == 0
-        assert lock._file.mode == "r"
+        assert lock._file_ref.fh.mode == "rb"
 
         # upgrade to write here
         with pytest.raises(lk.LockROFileError):
             lock.acquire_write()
-        lk.file_tracker.release_fh(lock.path)
 
 
-class ComplexAcquireAndRelease(object):
+class ComplexAcquireAndRelease:
     def __init__(self, lock_path):
         self.lock_path = lock_path
 
@@ -829,7 +840,7 @@ class AssertLock(lk.Lock):
     """Test lock class that marks acquire/release events."""
 
     def __init__(self, lock_path, vals):
-        super(AssertLock, self).__init__(lock_path)
+        super().__init__(lock_path)
         self.vals = vals
 
     # assert hooks for subclasses
@@ -840,25 +851,25 @@ class AssertLock(lk.Lock):
 
     def acquire_read(self, timeout=None):
         self.assert_acquire_read()
-        result = super(AssertLock, self).acquire_read(timeout)
+        result = super().acquire_read(timeout)
         self.vals["acquired_read"] = True
         return result
 
     def acquire_write(self, timeout=None):
         self.assert_acquire_write()
-        result = super(AssertLock, self).acquire_write(timeout)
+        result = super().acquire_write(timeout)
         self.vals["acquired_write"] = True
         return result
 
     def release_read(self, release_fn=None):
         self.assert_release_read()
-        result = super(AssertLock, self).release_read(release_fn)
+        result = super().release_read(release_fn)
         self.vals["released_read"] = True
         return result
 
     def release_write(self, release_fn=None):
         self.assert_release_write()
-        result = super(AssertLock, self).release_write(release_fn)
+        result = super().release_write(release_fn)
         self.vals["released_write"] = True
         return result
 
@@ -963,121 +974,6 @@ def test_transaction_with_exception(lock_path, transaction, type):
     assert vals["entered_fn"]
     assert vals["exited_fn"]
     assert vals["exception"]
-
-
-@pytest.mark.parametrize(
-    "transaction,type", [(lk.ReadTransaction, "read"), (lk.WriteTransaction, "write")]
-)
-def test_transaction_with_context_manager(lock_path, transaction, type):
-    class MockLock(AssertLock):
-        def assert_acquire_read(self):
-            assert not vals["entered_ctx"]
-            assert not vals["exited_ctx"]
-
-        def assert_release_read(self):
-            assert vals["entered_ctx"]
-            assert vals["exited_ctx"]
-
-        def assert_acquire_write(self):
-            assert not vals["entered_ctx"]
-            assert not vals["exited_ctx"]
-
-        def assert_release_write(self):
-            assert vals["entered_ctx"]
-            assert vals["exited_ctx"]
-
-    class TestContextManager(object):
-        def __enter__(self):
-            vals["entered_ctx"] = True
-
-        def __exit__(self, t, v, tb):
-            assert not vals["released_%s" % type]
-            vals["exited_ctx"] = True
-            vals["exception_ctx"] = t or v or tb
-            return exit_ctx_result
-
-    def exit_fn(t, v, tb):
-        assert not vals["released_%s" % type]
-        vals["exited_fn"] = True
-        vals["exception_fn"] = t or v or tb
-        return exit_fn_result
-
-    exit_fn_result, exit_ctx_result = False, False
-    vals = collections.defaultdict(lambda: False)
-    lock = MockLock(lock_path, vals)
-
-    with transaction(lock, acquire=TestContextManager, release=exit_fn):
-        pass
-
-    assert vals["entered_ctx"]
-    assert vals["exited_ctx"]
-    assert vals["exited_fn"]
-    assert not vals["exception_ctx"]
-    assert not vals["exception_fn"]
-
-    vals.clear()
-    with transaction(lock, acquire=TestContextManager):
-        pass
-
-    assert vals["entered_ctx"]
-    assert vals["exited_ctx"]
-    assert not vals["exited_fn"]
-    assert not vals["exception_ctx"]
-    assert not vals["exception_fn"]
-
-    # below are tests for exceptions with and without suppression
-    def assert_ctx_and_fn_exception(raises=True):
-        vals.clear()
-
-        if raises:
-            with pytest.raises(Exception):
-                with transaction(lock, acquire=TestContextManager, release=exit_fn):
-                    raise Exception()
-        else:
-            with transaction(lock, acquire=TestContextManager, release=exit_fn):
-                raise Exception()
-
-        assert vals["entered_ctx"]
-        assert vals["exited_ctx"]
-        assert vals["exited_fn"]
-        assert vals["exception_ctx"]
-        assert vals["exception_fn"]
-
-    def assert_only_ctx_exception(raises=True):
-        vals.clear()
-
-        if raises:
-            with pytest.raises(Exception):
-                with transaction(lock, acquire=TestContextManager):
-                    raise Exception()
-        else:
-            with transaction(lock, acquire=TestContextManager):
-                raise Exception()
-
-        assert vals["entered_ctx"]
-        assert vals["exited_ctx"]
-        assert not vals["exited_fn"]
-        assert vals["exception_ctx"]
-        assert not vals["exception_fn"]
-
-    # no suppression
-    assert_ctx_and_fn_exception(raises=True)
-    assert_only_ctx_exception(raises=True)
-
-    # suppress exception only in function
-    exit_fn_result, exit_ctx_result = True, False
-    assert_ctx_and_fn_exception(raises=False)
-    assert_only_ctx_exception(raises=True)
-
-    # suppress exception only in context
-    exit_fn_result, exit_ctx_result = False, True
-    assert_ctx_and_fn_exception(raises=False)
-    assert_only_ctx_exception(raises=False)
-
-    # suppress exception in function and context
-    exit_fn_result, exit_ctx_result = True, True
-    assert_ctx_and_fn_exception(raises=False)
-    assert_only_ctx_exception(raises=False)
 
 
 def test_nested_write_transaction(lock_path):
@@ -1187,7 +1083,7 @@ def test_nested_reads(lock_path):
                     assert vals["read"] == 1
 
 
-class LockDebugOutput(object):
+class LockDebugOutput:
     def __init__(self, lock_path):
         self.lock_path = lock_path
         self.host = socket.gethostname()
@@ -1263,17 +1159,17 @@ def test_lock_debug_output(lock_path):
     local_multiproc_test(test_debug.p2, test_debug.p1, extra_args=(q1, q2))
 
 
-def test_lock_with_no_parent_directory(tmpdir):
+def test_lock_with_no_parent_directory(tmp_path: pathlib.Path):
     """Make sure locks work even when their parent directory does not exist."""
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         lock = lk.Lock("foo/bar/baz/lockfile")
         with lk.WriteTransaction(lock):
             pass
 
 
-def test_lock_in_current_directory(tmpdir):
+def test_lock_in_current_directory(tmp_path: pathlib.Path):
     """Make sure locks work even when their parent directory does not exist."""
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         # test we can create a lock in the current directory
         lock = lk.Lock("lockfile")
         for i in range(10):
@@ -1294,7 +1190,7 @@ def test_lock_in_current_directory(tmpdir):
 def test_attempts_str():
     assert lk._attempts_str(0, 0) == ""
     assert lk._attempts_str(0.12, 1) == ""
-    assert lk._attempts_str(12.345, 2) == " after 12.35s and 2 attempts"
+    assert lk._attempts_str(12.345, 2) == " after 12.345s and 2 attempts"
 
 
 def test_lock_str():
@@ -1305,24 +1201,26 @@ def test_lock_str():
     assert "#reads=0, #writes=0" in lockstr
 
 
-def test_downgrade_write_okay(tmpdir):
+def test_downgrade_write_okay(tmp_path: pathlib.Path):
     """Test the lock write-to-read downgrade operation."""
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         lock = lk.Lock("lockfile")
         lock.acquire_write()
         lock.downgrade_write_to_read()
         assert lock._reads == 1
         assert lock._writes == 0
+        lock.release_read()
 
 
-def test_downgrade_write_fails(tmpdir):
+def test_downgrade_write_fails(tmp_path: pathlib.Path):
     """Test failing the lock write-to-read downgrade operation."""
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         lock = lk.Lock("lockfile")
         lock.acquire_read()
         msg = "Cannot downgrade lock from write to read on file: lockfile"
         with pytest.raises(lk.LockDowngradeError, match=msg):
             lock.downgrade_write_to_read()
+        lock.release_read()
 
 
 @pytest.mark.parametrize(
@@ -1333,42 +1231,183 @@ def test_downgrade_write_fails(tmpdir):
         (errno.ENOENT, "Fake ENOENT error"),
     ],
 )
-def test_poll_lock_exception(tmpdir, monkeypatch, err_num, err_msg):
+def test_poll_lock_exception(tmp_path: pathlib.Path, monkeypatch, err_num, err_msg):
     """Test poll lock exception handling."""
 
     def _lockf(fd, cmd, len, start, whence):
-        raise IOError(err_num, err_msg)
+        raise OSError(err_num, err_msg)
 
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         lockfile = "lockfile"
         lock = lk.Lock(lockfile)
-
-        touch(lockfile)
+        lock.acquire_read()
 
         monkeypatch.setattr(fcntl, "lockf", _lockf)
 
         if err_num in [errno.EAGAIN, errno.EACCES]:
             assert not lock._poll_lock(fcntl.LOCK_EX)
         else:
-            with pytest.raises(IOError, match=err_msg):
+            with pytest.raises(OSError, match=err_msg):
                 lock._poll_lock(fcntl.LOCK_EX)
 
+        monkeypatch.undo()
+        lock.release_read()
 
-def test_upgrade_read_okay(tmpdir):
+
+def test_upgrade_read_okay(tmp_path: pathlib.Path):
     """Test the lock read-to-write upgrade operation."""
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         lock = lk.Lock("lockfile")
         lock.acquire_read()
         lock.upgrade_read_to_write()
         assert lock._reads == 0
         assert lock._writes == 1
+        lock.release_write()
 
 
-def test_upgrade_read_fails(tmpdir):
+def test_upgrade_read_fails(tmp_path: pathlib.Path):
     """Test failing the lock read-to-write upgrade operation."""
-    with tmpdir.as_cwd():
+    with working_dir(str(tmp_path)):
         lock = lk.Lock("lockfile")
         lock.acquire_write()
         msg = "Cannot upgrade lock from read to write on file: lockfile"
         with pytest.raises(lk.LockUpgradeError, match=msg):
             lock.upgrade_read_to_write()
+        lock.release_write()
+
+
+@pytest.mark.parametrize("acquire", ["acquire_write", "acquire_read"])
+def test_acquire_after_fork(tmp_path: pathlib.Path, acquire: str):
+    """After fork, acquire_write/read must not silently succeed due to inherited counters."""
+    try:
+        ctx = multiprocessing.get_context("fork")
+    except ValueError:
+        pytest.skip("fork start method not available on this platform")
+
+    lockfile = str(tmp_path / "lockfile")
+    lock = lk.Lock(lockfile)
+    result = ctx.Queue()
+
+    def child():
+        assert lock._writes == 1  # due to forking, but POSIX lock is NOT held by this process
+        try:
+            if acquire == "acquire_write":
+                lock.acquire_write(lock_fail_timeout)
+            elif acquire == "acquire_read":
+                lock.acquire_read(lock_fail_timeout)
+            else:
+                assert False  # should never get here
+            result.put("no_error")
+        except lk.LockTimeoutError:
+            result.put("timed_out")
+
+    lock.acquire_write()
+    try:
+        p = ctx.Process(target=child)
+        p.start()
+        p.join()
+        assert result.get() == "timed_out"
+    finally:
+        lock.release_write()
+
+
+def _child_try_acquire_write(lock_path: str, result_queue):
+    lock = lk.Lock(lock_path)
+    result_queue.put(lock.try_acquire_write())
+
+
+def _child_try_acquire_read(lock_path: str, result_queue):
+    lock = lk.Lock(lock_path)
+    result_queue.put(lock.try_acquire_read())
+
+
+def test_try_acquire_read(tmp_path: pathlib.Path):
+    """Test non-blocking try_acquire_read."""
+    lock = lk.Lock(str(tmp_path / "lockfile"))
+
+    # Succeeds on unlocked lock
+    assert lock.try_acquire_read() is True
+    assert lock._reads == 1
+
+    # Succeeds again (nested)
+    assert lock.try_acquire_read() is True
+    assert lock._reads == 2
+
+    lock.release_read()
+    lock.release_read()
+    ctx = multiprocessing.get_context()
+
+    # Fails when another process holds an exclusive write lock
+    lock.acquire_write()
+    try:
+        q = ctx.Queue()
+        p = ctx.Process(target=_child_try_acquire_read, args=(str(tmp_path / "lockfile"), q))
+        p.start()
+        p.join()
+        assert q.get() is False
+    finally:
+        lock.release_write()
+
+
+def test_try_acquire_write(tmp_path: pathlib.Path):
+    """Test non-blocking try_acquire_write."""
+    lock = lk.Lock(str(tmp_path / "lockfile"))
+    ctx = multiprocessing.get_context()
+
+    # Succeeds on unlocked lock
+    assert lock.try_acquire_write() is True
+    assert lock._writes == 1
+
+    # Succeeds again (nested)
+    assert lock.try_acquire_write() is True
+    assert lock._writes == 2
+
+    lock.release_write()
+    lock.release_write()
+
+    # Fails when another process holds a write lock
+    lock.acquire_write()
+    try:
+        q = ctx.Queue()
+        p = ctx.Process(target=_child_try_acquire_write, args=(str(tmp_path / "lockfile"), q))
+        p.start()
+        p.join()
+        assert q.get() is False
+    finally:
+        lock.release_write()
+
+    # Fails when another process holds a read lock
+    lock.acquire_read()
+    try:
+        q = ctx.Queue()
+        p = ctx.Process(target=_child_try_acquire_write, args=(str(tmp_path / "lockfile"), q))
+        p.start()
+        p.join()
+        assert q.get() is False
+    finally:
+        lock.release_read()
+
+
+def _child_fails_to_acquire_read(_lock: lk.Lock):
+    try:
+        _lock.acquire_read(timeout=1e-9)
+    except lk.LockTimeoutError:
+        return
+    assert False, "Child process should not have been able to acquire read lock"
+
+
+def test_read_after_write_does_not_accidentally_downgrade(tmp_path: pathlib.Path):
+    """Test that acquiring a read lock after a write lock does not accidentally downgrade the
+    write lock, by having another process attempt to acquire a read lock."""
+    lock = lk.Lock(str(tmp_path / "lockfile"))
+    lock.acquire_write()
+    lock.acquire_read()  # should not downgrade the write lock
+    try:
+        # No matter the start method, the child process shouldn't be able to acquire a read lock.
+        p = multiprocessing.Process(target=_child_fails_to_acquire_read, args=(lock,))
+        p.start()
+        p.join()
+        assert p.exitcode == 0
+    finally:
+        lock.release_read()
+        lock.release_write()

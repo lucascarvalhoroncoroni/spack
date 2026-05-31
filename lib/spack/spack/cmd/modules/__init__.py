@@ -1,23 +1,24 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 """Implementation details of the ``spack module`` command."""
 
 import collections
-import os.path
+import os
 import shutil
 import sys
 
-from llnl.util import filesystem, tty
-
 import spack.cmd
-import spack.cmd.common.arguments as arguments
 import spack.config
+import spack.error
 import spack.modules
 import spack.modules.common
 import spack.repo
+from spack.cmd import MultipleSpecsMatch, NoSpecMatches
+from spack.cmd.common import arguments
+from spack.llnl.util import filesystem, tty
+from spack.llnl.util.tty import color
 
 description = "manipulate module files"
 section = "environment"
@@ -31,7 +32,7 @@ def setup_parser(subparser):
         action="store",
         dest="module_set_name",
         default="default",
-        help="Named module set to use from modules configuration.",
+        help="named module set to use from modules configuration",
     )
     sp = subparser.add_subparsers(metavar="SUBCOMMAND", dest="subparser_name")
 
@@ -89,18 +90,6 @@ def add_loads_arguments(subparser):
     arguments.add_common_arguments(subparser, ["recurse_dependencies"])
 
 
-class MultipleSpecsMatch(Exception):
-    """Raised when multiple specs match a constraint, in a context where
-    this is not allowed.
-    """
-
-
-class NoSpecMatches(Exception):
-    """Raised when no spec matches a constraint, in a context where
-    this is not allowed.
-    """
-
-
 def one_spec_or_raise(specs):
     """Ensures exactly one spec has been selected, or raises the appropriate
     exception.
@@ -116,21 +105,23 @@ def one_spec_or_raise(specs):
 
 
 def check_module_set_name(name):
-    modules_config = spack.config.get("modules")
-    valid_names = set(
-        [
-            key
-            for key, value in modules_config.items()
-            if isinstance(value, dict) and value.get("enable", [])
-        ]
-    )
-    if "enable" in modules_config and modules_config["enable"]:
-        valid_names.add("default")
+    modules = spack.config.get("modules")
+    if name != "prefix_inspections" and name in modules:
+        return
 
-    if name not in valid_names:
-        msg = "Cannot use invalid module set %s." % name
-        msg += "    Valid module set names are %s" % list(valid_names)
-        raise spack.config.ConfigError(msg)
+    names = [k for k in modules if k != "prefix_inspections"]
+
+    if not names:
+        raise spack.error.ConfigError(
+            f"Module set configuration is missing. Cannot use module set '{name}'"
+        )
+
+    pretty_names = "', '".join(names)
+
+    raise spack.error.ConfigError(
+        f"Cannot use invalid module set '{name}'.",
+        f"Valid module set names are: '{pretty_names}'.",
+    )
 
 
 _missing_modules_warning = (
@@ -169,7 +160,7 @@ def loads(module_type, specs, args, out=None):
     modules = list(
         (
             spec,
-            spack.modules.common.get_module(
+            spack.modules.get_module(
                 module_type,
                 spec,
                 get_full_path=False,
@@ -180,10 +171,7 @@ def loads(module_type, specs, args, out=None):
         for spec in specs
     )
 
-    module_commands = {
-        "tcl": "module load ",
-        "lmod": "module load ",
-    }
+    module_commands = {"tcl": "module load ", "lmod": "module load "}
 
     d = {"command": "" if not args.shell else module_commands[module_type], "prefix": args.prefix}
 
@@ -221,7 +209,7 @@ def find(module_type, specs, args):
 
     try:
         modules = [
-            spack.modules.common.get_module(
+            spack.modules.get_module(
                 module_type,
                 spec,
                 args.full_path,
@@ -232,7 +220,7 @@ def find(module_type, specs, args):
         ]
 
         modules.append(
-            spack.modules.common.get_module(
+            spack.modules.get_module(
                 module_type,
                 single_spec,
                 args.full_path,
@@ -309,7 +297,7 @@ def refresh(module_type, specs, args):
 
     # Skip unknown packages.
     writers = [
-        cls(spec, args.module_set_name) for spec in specs if spack.repo.path.exists(spec.name)
+        cls(spec, args.module_set_name) for spec in specs if spack.repo.PATH.exists(spec.name)
     ]
 
     # Filter excluded packages early
@@ -321,12 +309,13 @@ def refresh(module_type, specs, args):
         file2writer[item.layout.filename].append(item)
 
     if len(file2writer) != len(writers):
+        spec_fmt_str = "{name}@={version}%{compiler}/{hash:7} {variants} arch={arch}"
         message = "Name clashes detected in module files:\n"
         for filename, writer_list in file2writer.items():
             if len(writer_list) > 1:
                 message += "\nfile: {0}\n".format(filename)
                 for x in writer_list:
-                    message += "spec: {0}\n".format(x.spec.format())
+                    message += "spec: {0}\n".format(x.spec.format(spec_fmt_str))
         tty.error(message)
         tty.error("Operation aborted")
         raise SystemExit(1)
@@ -348,30 +337,38 @@ def refresh(module_type, specs, args):
     spack.modules.common.generate_module_index(
         module_type_root, writers, overwrite=args.delete_tree
     )
+    errors = []
     for x in writers:
         try:
             x.write(overwrite=True)
+        except spack.error.SpackError as e:
+            msg = f"{x.layout.filename}: {e.message}"
+            errors.append(msg)
         except Exception as e:
-            tty.debug(e)
-            msg = "Could not write module file [{0}]"
-            tty.warn(msg.format(x.layout.filename))
-            tty.warn("\t--> {0} <--".format(str(e)))
+            msg = f"{x.layout.filename}: {str(e)}"
+            errors.append(msg)
+
+    if errors:
+        errors.insert(0, color.colorize("@*{some module files could not be written}"))
+        tty.warn("\n".join(errors))
 
 
 #: Dictionary populated with the list of sub-commands.
 #: Each sub-command must be callable and accept 3 arguments:
 #:
-#:   - module_type: the type of module it refers to
-#:   - specs : the list of specs to be processed
-#:   - args : namespace containing the parsed command line arguments
+#: - module_type: the type of module it refers to
+#: - specs : the list of specs to be processed
+#: - args : namespace containing the parsed command line arguments
 callbacks = {"refresh": refresh, "rm": rm, "find": find, "loads": loads}
 
 
 def modules_cmd(parser, args, module_type, callbacks=callbacks):
-
     # Qualifiers to be used when querying the db for specs
     constraint_qualifiers = {
-        "refresh": {"installed": True, "known": True},
+        "refresh": {
+            "installed": True,
+            "predicate_fn": lambda x: spack.repo.PATH.exists(x.spec.name),
+        }
     }
     query_args = constraint_qualifiers.get(args.subparser_name, {})
 
@@ -379,25 +376,22 @@ def modules_cmd(parser, args, module_type, callbacks=callbacks):
     specs = args.specs(**query_args)
 
     try:
-
         callbacks[args.subparser_name](module_type, specs, args)
 
     except MultipleSpecsMatch:
-        msg = "the constraint '{query}' matches multiple packages:\n"
+        query = " ".join(str(s) for s in args.constraint_specs)
+        msg = f"the constraint '{query}' matches multiple packages:\n"
         for s in specs:
-            spec_fmt = "{hash:7} {name}{@version}{%compiler}"
-            spec_fmt += "{compiler_flags}{variants}{arch=architecture}"
+            spec_fmt = (
+                "{hash:7} {name}{@version}{compiler_flags}{variants}"
+                "{ platform=architecture.platform}{ os=architecture.os}"
+                "{ target=architecture.target}"
+                "{%compiler}"
+            )
             msg += "\t" + s.cformat(spec_fmt) + "\n"
-        tty.error(msg.format(query=args.constraint))
-        tty.die(
-            "In this context exactly **one** match is needed: "
-            "please specify your constraints better."
-        )
+        tty.die(msg, "In this context exactly *one* match is needed.")
 
     except NoSpecMatches:
-        msg = "the constraint '{query}' matches no package."
-        tty.error(msg.format(query=args.constraint))
-        tty.die(
-            "In this context exactly **one** match is needed: "
-            "please specify your constraints better."
-        )
+        query = " ".join(str(s) for s in args.constraint_specs)
+        msg = f"the constraint '{query}' matches no package."
+        tty.die(msg, "In this context exactly *one* match is needed.")

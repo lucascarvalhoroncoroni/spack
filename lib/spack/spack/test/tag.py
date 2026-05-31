@@ -1,13 +1,14 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 """Tests for tag index cache files."""
 
-import pytest
-from six import StringIO
+import io
 
-import spack.cmd.install
+import pytest
+
+import spack.cmd.tags
+import spack.repo
 import spack.tag
 from spack.main import SpackCommand
 
@@ -39,16 +40,9 @@ more_tags_json = """
     """
 
 
-def test_tag_copy(mock_packages):
-    index = spack.tag.TagIndex.from_json(StringIO(tags_json))
-    new_index = index.copy()
-
-    assert index.tags == new_index.tags
-
-
 def test_tag_get_all_available(mock_packages):
     for skip in [False, True]:
-        all_pkgs = spack.tag.packages_with_tags(None, False, skip)
+        all_pkgs = spack.cmd.tags.packages_with_tags(["tag1", "tag2", "tag3"], False, skip)
         assert sorted(all_pkgs["tag1"]) == ["mpich", "mpich2"]
         assert all_pkgs["tag2"] == ["mpich"]
         assert all_pkgs["tag3"] == ["mpich2"]
@@ -74,11 +68,11 @@ def ensure_tags_results_equal(results, expected):
 )
 def test_tag_get_available(tags, expected, mock_packages):
     # Ensure results for all tags
-    all_tag_pkgs = spack.tag.packages_with_tags(tags, False, False)
+    all_tag_pkgs = spack.cmd.tags.packages_with_tags(tags, False, False)
     ensure_tags_results_equal(all_tag_pkgs, expected)
 
     # Ensure results for tags expecting results since skipping otherwise
-    only_pkgs = spack.tag.packages_with_tags(tags, False, True)
+    only_pkgs = spack.cmd.tags.packages_with_tags(tags, False, True)
     if expected[tags[0]]:
         ensure_tags_results_equal(only_pkgs, expected)
     else:
@@ -86,10 +80,10 @@ def test_tag_get_available(tags, expected, mock_packages):
 
 
 def test_tag_get_installed_packages(mock_packages, mock_archive, mock_fetch, install_mockery):
-    install("mpich")
+    install("--fake", "mpich")
 
     for skip in [False, True]:
-        all_pkgs = spack.tag.packages_with_tags(None, True, skip)
+        all_pkgs = spack.cmd.tags.packages_with_tags(["tag1", "tag2", "tag3"], True, skip)
         assert sorted(all_pkgs["tag1"]) == ["mpich"]
         assert all_pkgs["tag2"] == ["mpich"]
         assert skip or all_pkgs["tag3"] == []
@@ -97,28 +91,28 @@ def test_tag_get_installed_packages(mock_packages, mock_archive, mock_fetch, ins
 
 def test_tag_index_round_trip(mock_packages):
     # Assumes at least two packages -- mpich and mpich2 -- have tags
-    mock_index = spack.repo.path.tag_index
+    mock_index = spack.repo.PATH.tag_index
     assert mock_index.tags
 
-    ostream = StringIO()
+    ostream = io.StringIO()
     mock_index.to_json(ostream)
 
-    istream = StringIO(ostream.getvalue())
+    istream = io.StringIO(ostream.getvalue())
     new_index = spack.tag.TagIndex.from_json(istream)
 
-    assert mock_index == new_index
+    assert mock_index.tags == new_index.tags
 
 
-def test_tag_equal():
-    first_index = spack.tag.TagIndex.from_json(StringIO(tags_json))
-    second_index = spack.tag.TagIndex.from_json(StringIO(tags_json))
+def test_tag_equal(mock_packages):
+    first_index = spack.tag.TagIndex.from_json(io.StringIO(tags_json))
+    second_index = spack.tag.TagIndex.from_json(io.StringIO(tags_json))
 
-    assert first_index == second_index
+    assert first_index.tags == second_index.tags
 
 
-def test_tag_merge():
-    first_index = spack.tag.TagIndex.from_json(StringIO(tags_json))
-    second_index = spack.tag.TagIndex.from_json(StringIO(more_tags_json))
+def test_tag_merge(mock_packages):
+    first_index = spack.tag.TagIndex.from_json(io.StringIO(tags_json))
+    second_index = spack.tag.TagIndex.from_json(io.StringIO(more_tags_json))
 
     assert first_index != second_index
 
@@ -136,25 +130,23 @@ def test_tag_merge():
     assert tag_keys == all_tags
 
 
-def test_tag_not_dict():
+def test_tag_not_dict(mock_packages):
     list_json = "[]"
     with pytest.raises(spack.tag.TagIndexError) as e:
-        spack.tag.TagIndex.from_json(StringIO(list_json))
+        spack.tag.TagIndex.from_json(io.StringIO(list_json))
         assert "not a dict" in str(e)
 
 
-def test_tag_no_tags():
+def test_tag_no_tags(mock_packages):
     pkg_json = '{"packages": []}'
     with pytest.raises(spack.tag.TagIndexError) as e:
-        spack.tag.TagIndex.from_json(StringIO(pkg_json))
+        spack.tag.TagIndex.from_json(io.StringIO(pkg_json))
         assert "does not start with" in str(e)
 
 
 def test_tag_update_package(mock_packages):
-    mock_index = spack.repo.path.tag_index
-
+    mock_index = mock_packages.tag_index
     index = spack.tag.TagIndex()
-    for name in spack.repo.all_package_names():
-        index.update_package(name)
+    index.update_packages(set(spack.repo.all_package_names()), repo=mock_packages)
 
     ensure_tags_results_equal(mock_index.tags, index.tags)

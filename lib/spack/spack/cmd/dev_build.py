@@ -1,40 +1,42 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
+import argparse
 import os
 import sys
 
-import llnl.util.tty as tty
-
+import spack.build_environment
 import spack.cmd
-import spack.cmd.common.arguments as arguments
+import spack.cmd.common.arguments
+import spack.concretize
 import spack.config
+import spack.installer_dispatch
+import spack.llnl.util.tty as tty
 import spack.repo
+from spack.cmd.common import arguments
 
-description = "developer build: build from code in current working directory"
+description = "build package from code in current working directory"
 section = "build"
 level = "long"
 
 
-def setup_parser(subparser):
-    arguments.add_common_arguments(subparser, ["jobs"])
+def setup_parser(subparser: argparse.ArgumentParser) -> None:
+    arguments.add_common_arguments(subparser, ["jobs", "no_checksum", "spec"])
     subparser.add_argument(
         "-d",
         "--source-path",
         dest="source_path",
         default=None,
-        help="path to source directory. defaults to the current directory",
+        help="path to source directory (defaults to the current directory)",
     )
     subparser.add_argument(
         "-i",
         "--ignore-dependencies",
         action="store_true",
         dest="ignore_deps",
-        help="don't try to install dependencies of requested packages",
+        help="do not try to install dependencies of requested packages",
     )
-    arguments.add_common_arguments(subparser, ["no_checksum", "deprecated"])
     subparser.add_argument(
         "--keep-prefix",
         action="store_true",
@@ -55,18 +57,14 @@ def setup_parser(subparser):
         type=str,
         dest="shell",
         default=None,
-        help="drop into a build environment in a new shell, e.g. bash, zsh",
+        help="drop into a build environment in a new shell, e.g., bash",
     )
     subparser.add_argument(
         "--test",
         default=None,
         choices=["root", "all"],
-        help="""If 'root' is chosen, run package tests during
-installation for top-level packages (but skip tests for dependencies).
-if 'all' is chosen, run package tests during installation for all
-packages. If neither are chosen, don't run tests for any packages.""",
+        help="run tests on only root packages or all packages",
     )
-    arguments.add_common_arguments(subparser, ["spec"])
 
     stop_group = subparser.add_mutually_exclusive_group()
     stop_group.add_argument(
@@ -94,23 +92,19 @@ packages. If neither are chosen, don't run tests for any packages.""",
 
 def dev_build(self, args):
     if not args.spec:
-        tty.die("spack dev-build requires a package spec argument.")
+        args.subparser.error("requires a package spec argument")
 
     specs = spack.cmd.parse_specs(args.spec)
     if len(specs) > 1:
-        tty.die("spack dev-build only takes one spec.")
+        args.subparser.error("only takes one spec")
 
     spec = specs[0]
-    if not spack.repo.path.exists(spec.name):
-        tty.die(
-            "No package for '{0}' was found.".format(spec.name),
-            "  Use `spack create` to create a new package",
-        )
+    if not spack.repo.PATH.exists(spec.name):
+        raise spack.repo.UnknownPackageError(spec.name)
 
-    if not spec.versions.concrete:
-        tty.die(
-            "spack dev-build spec must have a single, concrete version. "
-            "Did you forget a package version number?"
+    if not spec.versions.concrete_range_as_version:
+        args.subparser.error(
+            "spec must have a single, concrete version. Did you forget a package version number?"
         )
 
     source_path = args.source_path
@@ -119,8 +113,8 @@ def dev_build(self, args):
     source_path = os.path.abspath(source_path)
 
     # Forces the build to run out of the source directory.
-    spec.constrain("dev_path=%s" % source_path)
-    spec.concretize()
+    spec.constrain(f'dev_path="{source_path}"')
+    spec = spack.concretize.concretize_one(spec)
 
     if spec.installed:
         tty.error("Already installed in %s" % spec.prefix)
@@ -131,18 +125,15 @@ def dev_build(self, args):
     if args.no_checksum:
         spack.config.set("config:checksum", False, scope="command_line")
 
-    if args.deprecated:
-        spack.config.set("config:deprecated", True, scope="command_line")
-
     tests = False
     if args.test == "all":
         tests = True
     elif args.test == "root":
         tests = [spec.name for spec in specs]
 
-    spec.package.do_install(
+    spack.installer_dispatch.create_installer(
+        [spec.package],
         tests=tests,
-        make_jobs=args.jobs,
         keep_prefix=args.keep_prefix,
         install_deps=not args.ignore_deps,
         verbose=not args.quiet,
@@ -150,7 +141,7 @@ def dev_build(self, args):
         stop_before=args.before,
         skip_patch=args.skip_patch,
         stop_at=args.until,
-    )
+    ).install()
 
     # drop into the build environment of the package?
     if args.shell is not None:

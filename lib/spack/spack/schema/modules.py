@@ -1,199 +1,250 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 """Schema for modules.yaml configuration file.
 
 .. literalinclude:: _spack_root/lib/spack/spack/schema/modules.py
-   :lines: 13-
+   :lines: 16-
 """
-import warnings
+
+from typing import Any, Dict
 
 import spack.schema.environment
 import spack.schema.projections
 
-#: Matches a spec or a multi-valued variant but not another
-#: valid keyword.
-#:
-#: THIS NEEDS TO BE UPDATED FOR EVERY NEW KEYWORD THAT
-#: IS ADDED IMMEDIATELY BELOW THE MODULE TYPE ATTRIBUTE
-spec_regex = (
-    r"(?!hierarchy|core_specs|verbose|hash_length|defaults|"
-    r"whitelist|blacklist|"  # DEPRECATED: remove in 0.20.
-    r"include|exclude|"  # use these more inclusive/consistent options
-    r"projections|naming_scheme|core_compilers|all)(^\w[\w-]*)"
-)
-
-#: Matches a valid name for a module set
-valid_module_set_name = (
-    r"^(?!arch_folder$|lmod$|roots$|enable$|prefix_inspections$|" r"tcl$|use_view$)\w[\w-]*$"
-)
-
-#: Matches an anonymous spec, i.e. a spec without a root name
-anonymous_spec_regex = r"^[\^@%+~]"
-
 #: Definitions for parts of module schema
 array_of_strings = {"type": "array", "default": [], "items": {"type": "string"}}
 
-dictionary_of_strings = {"type": "object", "patternProperties": {r"\w[\w-]*": {"type": "string"}}}
-
-dependency_selection = {"type": "string", "enum": ["none", "direct", "all"]}
+dependency_selection = {"type": "string", "enum": ["none", "run", "direct", "all"]}
 
 module_file_configuration = {
     "type": "object",
     "default": {},
+    "description": "Configuration for individual module file behavior and content customization",
     "additionalProperties": False,
     "properties": {
         "filter": {
             "type": "object",
             "default": {},
+            "description": "Filter out specific environment variable modifications from "
+            "module files",
             "additionalProperties": False,
             "properties": {
-                # DEPRECATED: remove in 0.20.
-                "environment_blacklist": {
+                "exclude_env_vars": {
                     "type": "array",
                     "default": [],
                     "items": {"type": "string"},
-                },
-                # use exclude_env_vars instead
-                "exclude_env_vars": {"type": "array", "default": [], "items": {"type": "string"}},
+                    "description": "List of environment variable names to exclude from module "
+                    "file modifications",
+                }
             },
         },
-        "template": {"type": "string"},
-        "autoload": dependency_selection,
-        "prerequisites": dependency_selection,
-        "conflict": array_of_strings,
-        "load": array_of_strings,
+        "template": {
+            "type": "string",
+            "description": "Path to custom template file for generating module files",
+        },
+        "autoload": {
+            **dependency_selection,
+            "description": "Automatically load dependency modules when this module is loaded",
+        },
+        "prerequisites": {
+            **dependency_selection,
+            "description": "Mark dependency modules as prerequisites instead of autoloading them",
+        },
+        "conflict": {
+            **array_of_strings,
+            "description": "List of modules that conflict with this one and should not be loaded "
+            "simultaneously",
+        },
+        "load": {
+            **array_of_strings,
+            "description": "List of additional modules to load when this module is loaded",
+        },
         "suffixes": {
             "type": "object",
-            "validate_spec": True,
-            "patternProperties": {r"\w[\w-]*": {"type": "string"}},  # key
+            "description": "Add custom suffixes to module names based on spec matching for better "
+            "readability",
+            "additionalKeysAreSpecs": True,
+            "additionalProperties": {"type": "string"},  # key
         },
-        "environment": spack.schema.environment.definition,
+        "environment": spack.schema.environment.ref_env_modifications,
     },
 }
 
-projections_scheme = spack.schema.projections.properties["projections"]
+ref_module_file_configuration = {"$ref": "#/definitions/module_file_configuration"}
 
-module_type_configuration = {
-    "type": "object",
-    "default": {},
-    "allOf": [
-        {
-            "properties": {
-                "verbose": {"type": "boolean", "default": False},
-                "hash_length": {"type": "integer", "minimum": 0, "default": 7},
-                # DEPRECATED: remove in 0.20.
-                "whitelist": array_of_strings,
-                "blacklist": array_of_strings,
-                "blacklist_implicits": {"type": "boolean", "default": False},
-                # whitelist/blacklist have been replaced with include/exclude
-                "include": array_of_strings,
-                "exclude": array_of_strings,
-                "exclude_implicits": {"type": "boolean", "default": False},
-                "defaults": array_of_strings,
-                "naming_scheme": {"type": "string"},  # Can we be more specific here?
-                "projections": projections_scheme,
-                "all": module_file_configuration,
-            }
-        },
-        {
-            "validate_spec": True,
-            "patternProperties": {
-                spec_regex: module_file_configuration,
-                anonymous_spec_regex: module_file_configuration,
-            },
-        },
-    ],
+projections_scheme = {"$ref": "#/definitions/projections"}
+
+common_props = {
+    "verbose": {
+        "type": "boolean",
+        "default": False,
+        "description": "Enable verbose output during module file generation",
+    },
+    "hash_length": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 7,
+        "description": "Length of package hash to include in module file names (0-32, shorter "
+        "hashes may cause naming conflicts)",
+    },
+    "include": {
+        **array_of_strings,
+        "description": "List of specs to explicitly include for module file generation, even if "
+        "they would normally be excluded",
+    },
+    "exclude": {
+        **array_of_strings,
+        "description": "List of specs to exclude from module file generation",
+    },
+    "exclude_implicits": {
+        "type": "boolean",
+        "default": False,
+        "description": "Exclude implicit dependencies from module file generation while still "
+        "allowing autoloading",
+    },
+    "defaults": {
+        **array_of_strings,
+        "description": "List of specs for which to create default module symlinks when multiple "
+        "versions exist",
+    },
+    "hide_implicits": {
+        "type": "boolean",
+        "default": False,
+        "description": "Hide implicit dependency modules from 'module avail' but still allow "
+        "autoloading (requires module system support)",
+    },
+    "naming_scheme": {
+        "type": "string",
+        "description": "Custom naming scheme for module files using format strings",
+    },
+    "projections": {
+        **projections_scheme,
+        "description": "Custom directory structure and naming convention for module files using "
+        "projection format",
+    },
+    "all": ref_module_file_configuration,
 }
 
+tcl_configuration = {
+    "type": "object",
+    "default": {},
+    "description": "Configuration for TCL module files compatible with Environment Modules and "
+    "Lmod",
+    "additionalKeysAreSpecs": True,
+    "properties": {**common_props},
+    "additionalProperties": ref_module_file_configuration,
+}
+
+lmod_configuration = {
+    "type": "object",
+    "default": {},
+    "description": "Configuration for Lua module files compatible with Lmod hierarchical module "
+    "system",
+    "additionalKeysAreSpecs": True,
+    "properties": {
+        **common_props,
+        "core_compilers": {
+            **array_of_strings,
+            "description": "List of core compilers that are always available at the top level of "
+            "the Lmod hierarchy",
+        },
+        "hierarchy": {
+            **array_of_strings,
+            "description": "List of packages to use for building the Lmod module hierarchy "
+            "(typically compilers and MPI implementations)",
+        },
+        "core_specs": {
+            **array_of_strings,
+            "description": "List of specs that should be placed in the core level of the Lmod "
+            "hierarchy regardless of dependencies",
+        },
+        "filter_hierarchy_specs": {
+            "type": "object",
+            "description": "Filter which specs are included at different levels of the Lmod "
+            "hierarchy based on spec matching",
+            "additionalKeysAreSpecs": True,
+            "additionalProperties": array_of_strings,
+        },
+    },
+    "additionalProperties": ref_module_file_configuration,
+}
 
 module_config_properties = {
-    "use_view": {"anyOf": [{"type": "string"}, {"type": "boolean"}]},
-    "arch_folder": {"type": "boolean"},
+    "use_view": {
+        "anyOf": [{"type": "string"}, {"type": "boolean"}],
+        "description": "Generate modules relative to an environment view instead of install "
+        "tree (True for default view, string for named view, False to disable)",
+    },
+    "arch_folder": {
+        "type": "boolean",
+        "description": "Whether to include architecture-specific subdirectories in module file "
+        "paths",
+    },
     "roots": {
         "type": "object",
+        "description": "Custom root directories for different module file types",
         "properties": {
-            "tcl": {"type": "string"},
-            "lmod": {"type": "string"},
+            "tcl": {"type": "string", "description": "Root directory for TCL module files"},
+            "lmod": {"type": "string", "description": "Root directory for Lmod module files"},
         },
     },
     "enable": {
         "type": "array",
         "default": [],
+        "description": "List of module types to automatically generate during package "
+        "installation",
         "items": {"type": "string", "enum": ["tcl", "lmod"]},
     },
     "lmod": {
-        "allOf": [
-            # Base configuration
-            module_type_configuration,
-            {
-                "type": "object",
-                "properties": {
-                    "core_compilers": array_of_strings,
-                    "hierarchy": array_of_strings,
-                    "core_specs": array_of_strings,
-                },
-            },  # Specific lmod extensions
-        ]
+        **lmod_configuration,
+        "description": "Configuration for Lmod hierarchical module system",
     },
     "tcl": {
-        "allOf": [
-            # Base configuration
-            module_type_configuration,
-            {},  # Specific tcl extensions
-        ]
+        **tcl_configuration,
+        "description": "Configuration for TCL module files compatible with Environment Modules",
     },
     "prefix_inspections": {
         "type": "object",
-        "additionalProperties": False,
-        "patternProperties": {
+        "description": "Control which package subdirectories are added to environment variables "
+        "(e.g., bin to PATH, lib to LIBRARY_PATH)",
+        "additionalProperties": {
             # prefix-relative path to be inspected for existence
-            r"^[\w-]*": array_of_strings
+            **array_of_strings,
+            "description": "List of environment variables to update with this prefix-relative "
+            "path if it exists",
         },
     },
 }
 
 
-def deprecation_msg_default_module_set(instance, props):
-    return (
-        'Top-level properties "{0}" in module config are ignored as of Spack v0.18. '
-        'They should be set on the "default" module set. Run\n\n'
-        "\t$ spack config update modules\n\n"
-        "to update the file to the new format".format('", "'.join(instance))
-    )
-
-
 # Properties for inclusion into other schemas (requires definitions)
-properties = {
+properties: Dict[str, Any] = {
     "modules": {
         "type": "object",
-        "additionalProperties": False,
+        "description": "Configure automatic generation of module files for Environment Modules "
+        "and Lmod to manage user environments at HPC centers",
         "properties": {
             "prefix_inspections": {
                 "type": "object",
-                "additionalProperties": False,
-                "patternProperties": {
+                "description": "Global prefix inspection settings that apply to all module sets, "
+                "controlling which subdirectories are added to environment variables",
+                "additionalProperties": {
                     # prefix-relative path to be inspected for existence
-                    r"^[\w-]*": array_of_strings
+                    **array_of_strings,
+                    "description": "List of environment variables to update with this "
+                    "prefix-relative path if it exists",
                 },
-            },
+            }
         },
-        "patternProperties": {
-            valid_module_set_name: {
-                "type": "object",
-                "default": {},
-                "additionalProperties": False,
-                "properties": module_config_properties,
-            },
-            # Deprecated top-level keys (ignored in 0.18 with a warning)
-            "^(arch_folder|lmod|roots|enable|tcl|use_view)$": {},
-        },
-        "deprecatedProperties": {
-            "properties": ["arch_folder", "lmod", "roots", "enable", "tcl", "use_view"],
-            "message": deprecation_msg_default_module_set,
-            "error": False,
+        "additionalProperties": {
+            "type": "object",
+            "default": {},
+            "description": "Named module set configuration (e.g., 'default') defining how module "
+            "files are generated for a specific set of packages",
+            "additionalProperties": False,
+            "properties": module_config_properties,
         },
     }
 }
@@ -204,97 +255,10 @@ schema = {
     "title": "Spack module file configuration file schema",
     "type": "object",
     "additionalProperties": False,
+    "definitions": {
+        "module_file_configuration": module_file_configuration,
+        "projections": spack.schema.projections.projections,
+        "env_modifications": spack.schema.environment.env_modifications,
+    },
     "properties": properties,
 }
-
-
-# deprecated keys and their replacements
-exclude_include_translations = {
-    "whitelist": "include",
-    "blacklist": "exclude",
-    "blacklist_implicits": "exclude_implicits",
-    "environment_blacklist": "exclude_env_vars",
-}
-
-
-def update_keys(data, key_translations):
-    """Change blacklist/whitelist to exclude/include.
-
-    Arguments:
-        data (dict): data from a valid modules configuration.
-        key_translations (dict): A dictionary of keys to translate to
-            their respective values.
-
-    Return:
-        (bool) whether anything was changed in data
-    """
-    changed = False
-
-    if isinstance(data, dict):
-        keys = list(data.keys())
-        for key in keys:
-            value = data[key]
-
-            translation = key_translations.get(key)
-            if translation:
-                data[translation] = data.pop(key)
-                changed = True
-
-            changed |= update_keys(value, key_translations)
-
-    elif isinstance(data, list):
-        for elt in data:
-            changed |= update_keys(elt, key_translations)
-
-    return changed
-
-
-def update_default_module_set(data):
-    """Update module configuration to move top-level keys inside default module set.
-
-    This change was introduced in v0.18 (see 99083f1706 or #28659).
-    """
-    changed = False
-
-    deprecated_top_level_keys = ("arch_folder", "lmod", "roots", "enable", "tcl", "use_view")
-
-    # Don't update when we already have a default module set
-    if "default" in data:
-        if any(key in data for key in deprecated_top_level_keys):
-            warnings.warn(
-                'Did not move top-level module properties into "default" '
-                'module set, because the "default" module set is already '
-                "defined"
-            )
-        return changed
-
-    default = {}
-
-    # Move deprecated top-level keys under "default" module set.
-    for key in deprecated_top_level_keys:
-        if key in data:
-            default[key] = data.pop(key)
-
-    if default:
-        changed = True
-        data["default"] = default
-
-    return changed
-
-
-def update(data):
-    """Update the data in place to remove deprecated properties.
-
-    Args:
-        data (dict): dictionary to be updated
-
-    Returns:
-        True if data was changed, False otherwise
-    """
-    # deprecated top-level module config (everything in default module set)
-    changed = update_default_module_set(data)
-
-    # translate blacklist/whitelist to exclude/include
-    changed |= update_keys(data, exclude_include_translations)
-
-    return changed

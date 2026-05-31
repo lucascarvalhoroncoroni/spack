@@ -1,21 +1,18 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-from __future__ import division, print_function
-
+import argparse
+import urllib.parse
 from collections import defaultdict
 
-import six.moves.urllib.parse as urllib_parse
-
-import llnl.util.tty.color as color
-from llnl.util import tty
-
 import spack.fetch_strategy as fs
+import spack.llnl.util.tty.color as color
 import spack.repo
 import spack.spec
+import spack.url
 import spack.util.crypto as crypto
+from spack.llnl.util import tty
 from spack.url import (
     UndetectableNameError,
     UndetectableVersionError,
@@ -29,14 +26,13 @@ from spack.url import (
     substitution_offsets,
 )
 from spack.util.naming import simplify_name
-from spack.util.web import find_versions_of_archive
 
 description = "debugging tool for url parsing"
 section = "developer"
 level = "long"
 
 
-def setup_parser(subparser):
+def setup_parser(subparser: argparse.ArgumentParser) -> None:
     sp = subparser.add_subparsers(metavar="SUBCOMMAND", dest="subcommand")
 
     # Parse
@@ -107,12 +103,7 @@ def setup_parser(subparser):
 
 
 def url(parser, args):
-    action = {
-        "parse": url_parse,
-        "list": url_list,
-        "summary": url_summary,
-        "stats": url_stats,
-    }
+    action = {"parse": url_parse, "list": url_list, "summary": url_summary, "stats": url_stats}
 
     action[args.subcommand](args)
 
@@ -147,7 +138,7 @@ def url_parse(args):
     if args.spider:
         print()
         tty.msg("Spidering for versions:")
-        versions = find_versions_of_archive(url)
+        versions = spack.url.find_versions_of_archive(url)
 
         if not versions:
             print("  Found no versions for {0}".format(name))
@@ -163,7 +154,7 @@ def url_list(args):
     urls = set()
 
     # Gather set of URLs from all packages
-    for pkg_cls in spack.repo.path.all_package_classes():
+    for pkg_cls in spack.repo.PATH.all_package_classes():
         url = getattr(pkg_cls, "url", None)
         urls = url_list_parsing(args, urls, url, pkg_cls)
 
@@ -200,7 +191,7 @@ def url_summary(args):
     tty.msg("Generating a summary of URL parsing in Spack...")
 
     # Loop through all packages
-    for pkg_cls in spack.repo.path.all_package_classes():
+    for pkg_cls in spack.repo.PATH.all_package_classes():
         urls = set()
         pkg = pkg_cls(spack.spec.Spec(pkg_cls.name))
 
@@ -296,7 +287,7 @@ def url_stats(args):
     # dictionary of issue type -> package -> descriptions
     issues = defaultdict(lambda: defaultdict(lambda: []))
 
-    class UrlStats(object):
+    class UrlStats:
         def __init__(self):
             self.total = 0
             self.schemes = defaultdict(lambda: 0)
@@ -323,7 +314,7 @@ def url_stats(args):
                     md5_hashes[pkg_name].append(fetcher.url)
 
                 # parse out the URL scheme (https/http/ftp/etc.)
-                urlinfo = urllib_parse.urlparse(fetcher.url)
+                urlinfo = urllib.parse.urlparse(fetcher.url)
                 self.schemes[urlinfo.scheme] += 1
 
                 if urlinfo.scheme == "http":
@@ -344,10 +335,10 @@ def url_stats(args):
     version_stats = UrlStats()
     resource_stats = UrlStats()
 
-    for pkg_cls in spack.repo.path.all_package_classes():
+    for pkg_cls in spack.repo.PATH.all_package_classes():
         npkgs += 1
 
-        for v in pkg_cls.versions:
+        for v in list(pkg_cls.versions):
             try:
                 pkg = pkg_cls(spack.spec.Spec(pkg_cls.name))
                 fetcher = fs.for_package_version(pkg, v)
@@ -526,9 +517,9 @@ def version_parsed_correctly(pkg, version):
 
 
 def remove_prefix(pkg_name):
-    """Remove build system prefix ('py-', 'perl-', etc.) from a package name.
+    """Remove build system prefix (``'py-'``, ``'perl-'``, etc.) from a package name.
 
-    After determining a name, `spack create` determines a build system.
+    After determining a name, ``spack create`` determines a build system.
     Some build systems prepend a special string to the front of the name.
     Since this can't be guessed from the URL, it would be unfair to say
     that these names are incorrectly parsed, so we remove them.
@@ -559,7 +550,7 @@ def remove_prefix(pkg_name):
 
 
 def remove_separators(version):
-    """Remove separator characters ('.', '_', and '-') from a version.
+    """Remove separator characters (``.``, ``_``, and ``-``) from a version.
 
     A version like 1.2.3 may be displayed as 1_2_3 in the URL.
     Make sure 1.2.3, 1-2-3, 1_2_3, and 123 are considered equal.

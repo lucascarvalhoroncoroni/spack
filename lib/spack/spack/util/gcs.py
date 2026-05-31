@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -10,8 +9,13 @@ integrate GCS Blob storage with spack buildcache.
 
 import os
 import sys
+import urllib.parse
+import urllib.response
+from typing import List
+from urllib.error import URLError
+from urllib.request import BaseHandler
 
-import llnl.util.tty as tty
+import spack.llnl.util.tty as tty
 
 
 def gcs_client():
@@ -34,7 +38,7 @@ def gcs_client():
     return storage_client
 
 
-class GCSBucket(object):
+class GCSBucket:
     """GCS Bucket Object
     Create a wrapper object for a GCS Bucket. Provides methods to wrap spack
     related tasks, such as destroy.
@@ -93,25 +97,23 @@ class GCSBucket(object):
             return self.bucket.blob(blob_path)
         return None
 
-    def get_all_blobs(self, recursive=True, relative=True):
+    def get_all_blobs(self, recursive: bool = True, relative: bool = True) -> List[str]:
         """Get a list of all blobs
-        Returns a list of all blobs within this bucket.
+
+        Returns: a list of all blobs within this bucket.
 
         Args:
-            relative: If true (default), print blob paths
-                         relative to 'build_cache' directory.
-                      If false, print absolute blob paths (useful for
-                         destruction of bucket)
+            relative: If true (default), print blob paths relative to 'build_cache' directory.
+                If false, print absolute blob paths (useful for destruction of bucket)
         """
         tty.debug("Getting GCS blobs... Recurse {0} -- Rel: {1}".format(recursive, relative))
 
-        converter = str
-        if relative:
-            converter = self._relative_blob_name
+        converter = self._relative_blob_name if relative else str
+
+        blob_list: List[str] = []
 
         if self.exists():
             all_blobs = self.bucket.list_blobs(prefix=self.prefix)
-            blob_list = []
 
             base_dirs = len(self.prefix.split("/")) + 1
 
@@ -123,7 +125,7 @@ class GCSBucket(object):
                 else:
                     blob_list.append(converter(blob.name))
 
-            return blob_list
+        return blob_list
 
     def _relative_blob_name(self, blob_name):
         return os.path.relpath(blob_name, self.prefix)
@@ -153,14 +155,13 @@ class GCSBucket(object):
             sys.exit(1)
 
 
-class GCSBlob(object):
+class GCSBlob:
     """GCS Blob object
 
     Wraps some blob methods for spack functionality
     """
 
     def __init__(self, url, client=None):
-
         self.url = url
         if url.scheme != "gs":
             raise ValueError(
@@ -223,3 +224,21 @@ class GCSBlob(object):
         }
 
         return headers
+
+
+def gcs_open(req, *args, **kwargs):
+    """Open a reader stream to a blob object on GCS"""
+    url = urllib.parse.urlparse(req.get_full_url())
+    gcsblob = GCSBlob(url)
+
+    if not gcsblob.exists():
+        raise URLError("GCS blob {0} does not exist".format(gcsblob.blob_path))
+    stream = gcsblob.get_blob_byte_stream()
+    headers = gcsblob.get_blob_headers()
+
+    return urllib.response.addinfourl(stream, headers, url)
+
+
+class GCSHandler(BaseHandler):
+    def gs_open(self, req):
+        return gcs_open(req)

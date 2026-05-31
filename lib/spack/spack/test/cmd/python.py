@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -40,4 +39,5 @@ def test_python_with_module():
 
 def test_python_raises():
     out = python("--foobar", fail_on_error=False)
-    assert "Error: Unknown arguments" in out
+    assert python.returncode == 2
+    assert "--foobar" in out

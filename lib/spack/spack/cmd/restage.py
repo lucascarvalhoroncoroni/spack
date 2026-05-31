@@ -1,26 +1,24 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-import llnl.util.tty as tty
+import argparse
 
 import spack.cmd
-import spack.cmd.common.arguments as arguments
-import spack.repo
+from spack.cmd.common import arguments
 
 description = "revert checked out package source code"
 section = "build"
 level = "long"
 
 
-def setup_parser(subparser):
+def setup_parser(subparser: argparse.ArgumentParser) -> None:
     arguments.add_common_arguments(subparser, ["specs"])
 
 
 def restage(parser, args):
     if not args.specs:
-        tty.die("spack restage requires at least one package spec.")
+        args.subparser.error("requires at least one package spec")
 
     specs = spack.cmd.parse_specs(args.specs, concretize=True)
     for spec in specs:

@@ -1,5 +1,4 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -7,16 +6,15 @@ import os
 import platform as py_platform
 import re
 
-import llnl.util.lang
-
+import spack.llnl.util.lang
 from spack.util.executable import Executable
-from spack.version import Version
+from spack.version import StandardVersion, Version
 
 from ._operating_system import OperatingSystem
 
 
-@llnl.util.lang.memoized
-def macos_version():
+@spack.llnl.util.lang.memoized
+def macos_version() -> StandardVersion:
     """Get the current macOS version as a version object.
 
     This has three mechanisms for determining the macOS version, which is used
@@ -45,7 +43,7 @@ def macos_version():
     """
     env_ver = os.environ.get("MACOSX_DEPLOYMENT_TARGET", None)
     if env_ver:
-        return Version(env_ver)
+        return StandardVersion.from_string(env_ver)
 
     try:
         output = Executable("sw_vers")(output=str, fail_on_error=False)
@@ -55,14 +53,14 @@ def macos_version():
     else:
         match = re.search(r"ProductVersion:\s*([0-9.]+)", output)
         if match:
-            return Version(match.group(1))
+            return StandardVersion.from_string(match.group(1))
 
     # Fall back to python-reported version, which can be inaccurate around
     # macOS 11 (e.g. showing 10.16 for macOS 12)
-    return Version(py_platform.mac_ver()[0])
+    return StandardVersion.from_string(py_platform.mac_ver()[0])
 
 
-@llnl.util.lang.memoized
+@spack.llnl.util.lang.memoized
 def macos_cltools_version():
     """Find the last installed version of the CommandLineTools.
 
@@ -86,7 +84,7 @@ def macos_cltools_version():
     return None
 
 
-@llnl.util.lang.memoized
+@spack.llnl.util.lang.memoized
 def macos_sdk_path():
     """Return path to the active macOS SDK."""
     xcrun = Executable("xcrun")
@@ -108,6 +106,33 @@ def macos_sdk_version():
     return Version(xcrun("--show-sdk-version", output=str).rstrip())
 
 
+mac_releases = {
+    "10.0": "cheetah",
+    "10.1": "puma",
+    "10.2": "jaguar",
+    "10.3": "panther",
+    "10.4": "tiger",
+    "10.5": "leopard",
+    "10.6": "snowleopard",
+    "10.7": "lion",
+    "10.8": "mountainlion",
+    "10.9": "mavericks",
+    "10.10": "yosemite",
+    "10.11": "elcapitan",
+    "10.12": "sierra",
+    "10.13": "highsierra",
+    "10.14": "mojave",
+    "10.15": "catalina",
+    "10.16": "bigsur",
+    "11": "bigsur",
+    "12": "monterey",
+    "13": "ventura",
+    "14": "sonoma",
+    "15": "sequoia",
+    "26": "tahoe",
+}
+
+
 class MacOs(OperatingSystem):
     """This class represents the macOS operating system. This will be
     auto detected using the python platform.mac_ver. The macOS
@@ -115,36 +140,15 @@ class MacOs(OperatingSystem):
     system name, i.e el capitan, yosemite...etc.
     """
 
-    def __init__(self):
+    def __init__(self, version=None):
         """Autodetects the mac version from a dictionary.
 
         If the mac version is too old or too new for Spack to recognize,
         will use a generic "macos" version string until Spack is updated.
         """
-        mac_releases = {
-            "10.0": "cheetah",
-            "10.1": "puma",
-            "10.2": "jaguar",
-            "10.3": "panther",
-            "10.4": "tiger",
-            "10.5": "leopard",
-            "10.6": "snowleopard",
-            "10.7": "lion",
-            "10.8": "mountainlion",
-            "10.9": "mavericks",
-            "10.10": "yosemite",
-            "10.11": "elcapitan",
-            "10.12": "sierra",
-            "10.13": "highsierra",
-            "10.14": "mojave",
-            "10.15": "catalina",
-            "10.16": "bigsur",
-            "11": "bigsur",
-            "12": "monterey",
-            "13": "ventura",
-        }
-
-        version = macos_version()
+        if isinstance(version, str):
+            version = Version(version)
+        version = version or macos_version()
 
         # Big Sur versions go 11.0, 11.0.1, 11.1 (vs. prior versions that
         # only used the minor component)
@@ -152,7 +156,7 @@ class MacOs(OperatingSystem):
 
         mac_ver = str(version.up_to(part))
         name = mac_releases.get(mac_ver, "macos")
-        super(MacOs, self).__init__(name, mac_ver)
+        super().__init__(name, mac_ver)
 
     def __str__(self):
         return self.name

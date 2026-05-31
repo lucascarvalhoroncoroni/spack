@@ -1,17 +1,16 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 """Test Spack's environment utility functions."""
+
 import os
+import pathlib
 import sys
 
 import pytest
 
 import spack.util.environment as envutil
-
-is_windows = sys.platform == "win32"
 
 
 @pytest.fixture()
@@ -23,14 +22,14 @@ def prepare_environment_for_tests():
 
 
 def test_is_system_path():
-    sys_path = "C:\\Users" if is_windows else "/usr/bin"
+    sys_path = "C:\\Users" if sys.platform == "win32" else "/usr/bin"
     assert envutil.is_system_path(sys_path)
     assert not envutil.is_system_path("/nonsense_path/bin")
     assert not envutil.is_system_path("")
     assert not envutil.is_system_path(None)
 
 
-if is_windows:
+if sys.platform == "win32":
     test_paths = [
         "C:\\Users",
         "C:\\",
@@ -51,7 +50,7 @@ else:
 
 
 def test_filter_system_paths():
-    nonsense_prefix = "C:\\nonsense_path" if is_windows else "/nonsense_path"
+    nonsense_prefix = "C:\\nonsense_path" if sys.platform == "win32" else "/nonsense_path"
     expected = [p for p in test_paths if p.startswith(nonsense_prefix)]
     filtered = envutil.filter_system_paths(test_paths)
     assert expected == filtered
@@ -115,27 +114,37 @@ def test_path_put_first(prepare_environment_for_tests):
     assert envutil.get_path("TEST_ENV_VAR") == expected
 
 
-def test_dump_environment(prepare_environment_for_tests, tmpdir):
+@pytest.mark.parametrize("shell", ["pwsh", "bat"] if sys.platform == "win32" else ["bash"])
+def test_dump_environment(prepare_environment_for_tests, shell_as, shell, tmp_path: pathlib.Path):
     test_paths = "/a:/b/x:/b/c"
     os.environ["TEST_ENV_VAR"] = test_paths
-    dumpfile_path = str(tmpdir.join("envdump.txt"))
+    dumpfile_path = str(tmp_path / "envdump.txt")
     envutil.dump_environment(dumpfile_path)
-    with open(dumpfile_path, "r") as dumpfile:
-        assert "TEST_ENV_VAR={0}; export TEST_ENV_VAR\n".format(test_paths) in list(dumpfile)
+    with open(dumpfile_path, "r", encoding="utf-8") as dumpfile:
+        if shell == "pwsh":
+            assert "$Env:TEST_ENV_VAR={}\n".format(test_paths) in list(dumpfile)
+        elif shell == "bat":
+            assert 'set "TEST_ENV_VAR={}"\n'.format(test_paths) in list(dumpfile)
+        else:
+            assert "TEST_ENV_VAR={0}; export TEST_ENV_VAR\n".format(test_paths) in list(dumpfile)
 
 
 def test_reverse_environment_modifications(working_env):
+    prepend_val = os.sep + os.path.join("new", "path", "prepended")
+    append_val = os.sep + os.path.join("new", "path", "appended")
+
     start_env = {
-        "PREPEND_PATH": os.sep + os.path.join("path", "to", "prepend", "to"),
-        "APPEND_PATH": os.sep + os.path.join("path", "to", "append", "to"),
+        "PREPEND_PATH": prepend_val + os.pathsep + os.path.join("path", "to", "prepend", "to"),
+        "APPEND_PATH": os.path.sep
+        + os.path.join("path", "to", "append", "to" + os.pathsep + append_val),
         "UNSET": "var_to_unset",
         "APPEND_FLAGS": "flags to append to",
     }
 
     to_reverse = envutil.EnvironmentModifications()
 
-    to_reverse.prepend_path("PREPEND_PATH", "/new/path/prepended")
-    to_reverse.append_path("APPEND_PATH", "/new/path/appended")
+    to_reverse.prepend_path("PREPEND_PATH", prepend_val)
+    to_reverse.append_path("APPEND_PATH", append_val)
     to_reverse.set_path("SET_PATH", ["/one/set/path", "/two/set/path"])
     to_reverse.set("SET", "a var")
     to_reverse.unset("UNSET")
@@ -143,13 +152,23 @@ def test_reverse_environment_modifications(working_env):
 
     reversal = to_reverse.reversed()
 
-    os.environ = start_env.copy()
+    os.environ.clear()
+    os.environ.update(start_env)
 
-    print(os.environ)
     to_reverse.apply_modifications()
-    print(os.environ)
     reversal.apply_modifications()
-    print(os.environ)
 
     start_env.pop("UNSET")
     assert os.environ == start_env
+
+
+def test_shell_modifications_are_properly_escaped():
+    """Test that variable values are properly escaped so that they can safely be eval'd."""
+    changes = envutil.EnvironmentModifications()
+    changes.set("VAR", "$PATH")
+    changes.append_path("VAR", "$ANOTHER_PATH")
+    changes.set("RM_RF", "$(rm -rf /)")
+
+    script = changes.shell_modifications(shell="sh")
+    assert f"export VAR='$PATH{os.pathsep}$ANOTHER_PATH'" in script
+    assert "export RM_RF='$(rm -rf /)'" in script

@@ -1,19 +1,18 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 import os
+import pathlib
 
 import pytest
 
-from llnl.util.filesystem import mkdirp, touch, working_dir
-
+import spack.concretize
 from spack.fetch_strategy import CvsFetchStrategy
-from spack.spec import Spec
+from spack.llnl.util.filesystem import mkdirp, touch, working_dir
 from spack.stage import Stage
 from spack.util.executable import which
-from spack.version import ver
+from spack.version import Version
 
 pytestmark = pytest.mark.skipif(not which("cvs"), reason="requires CVS to be installed")
 
@@ -38,8 +37,8 @@ def test_fetch(type_of_test, mock_cvs_repository, config, mutable_mock_repo):
     get_date = mock_cvs_repository.get_date
 
     # Construct the package under test
-    spec = Spec("cvs-test").concretized()
-    spec.package.versions[ver("cvs")] = test.args
+    spec = spack.concretize.concretize_one("cvs-test")
+    spec.package.versions[Version("cvs")] = test.args
 
     # Enter the stage directory and check some properties
     with spec.package.stage:
@@ -71,9 +70,9 @@ def test_fetch(type_of_test, mock_cvs_repository, config, mutable_mock_repo):
             assert os.path.isfile(file_path)
 
 
-def test_cvs_extra_fetch(tmpdir):
+def test_cvs_extra_fetch(tmp_path: pathlib.Path):
     """Ensure a fetch after downloading is effectively a no-op."""
-    testpath = str(tmpdir)
+    testpath = str(tmp_path)
 
     fetcher = CvsFetchStrategy(cvs=":pserver:not-a-real-cvs-repo%module=not-a-real-module")
     assert fetcher is not None

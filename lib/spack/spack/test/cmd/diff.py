@@ -1,28 +1,81 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-import sys
+import os
 
 import pytest
 
 import spack.cmd.diff
-import spack.config
+import spack.concretize
 import spack.main
-import spack.store
+import spack.paths
+import spack.repo
 import spack.util.spack_json as sjson
+import spack.version
 
 install_cmd = spack.main.SpackCommand("install")
 diff_cmd = spack.main.SpackCommand("diff")
 find_cmd = spack.main.SpackCommand("find")
 
+# Note that the hash of p1 will differ depending on the variant chosen
+# we probably always want to omit that from diffs
+# p1____
+# |     \
+# p2     v1
+# | ____/ |
+# p3      p4
+
+# i1 and i2 provide v1 (and both have the same dependencies)
+
+# All packages have an associated variant
+
+
+@pytest.fixture
+def test_repo(config):
+    builder_test_path = os.path.join(spack.paths.test_repos_path, "spack_repo", "diff")
+    with spack.repo.use_repositories(builder_test_path) as mock_repo:
+        yield mock_repo
+
+
+def test_diff_ignore(test_repo):
+    specA = spack.concretize.concretize_one("p1+usev1")
+    specB = spack.concretize.concretize_one("p1~usev1")
+
+    c1 = spack.cmd.diff.compare_specs(specA, specB, to_string=False)
+
+    def match(function, name, args):
+        limit = len(args)
+        return function.name == name and list(args[:limit]) == list(function.args[:limit])
+
+    def find(function_list, name, args):
+        return any(match(f, name, args) for f in function_list)
+
+    assert find(c1["a_not_b"], "node_os", ["p4"])
+
+    c2 = spack.cmd.diff.compare_specs(specA, specB, ignore_packages=["v1"], to_string=False)
+
+    assert not find(c2["a_not_b"], "node_os", ["p4"])
+    assert find(c2["intersect"], "node_os", ["p3"])
+
+    # Check ignoring changes on multiple packages
+
+    specA = spack.concretize.concretize_one("p1+usev1 ^p3+p3var")
+    specA = spack.concretize.concretize_one("p1~usev1 ^p3~p3var")
+
+    c3 = spack.cmd.diff.compare_specs(specA, specB, to_string=False)
+    assert find(c3["a_not_b"], "variant_value", ["p3", "p3var"])
+
+    c4 = spack.cmd.diff.compare_specs(specA, specB, ignore_packages=["v1", "p3"], to_string=False)
+    assert not find(c4["a_not_b"], "node_os", ["p4"])
+    assert not find(c4["a_not_b"], "variant_value", ["p3"])
+
 
 def test_diff_cmd(install_mockery, mock_fetch, mock_archive, mock_packages):
     """Test that we can install two packages and diff them"""
 
-    specA = spack.spec.Spec("mpileaks").concretized()
-    specB = spack.spec.Spec("mpileaks+debug").concretized()
+    specA = spack.concretize.concretize_one("mpileaks")
+    specB = spack.concretize.concretize_one("mpileaks+debug")
 
     # Specs should be the same as themselves
     c = spack.cmd.diff.compare_specs(specA, specA, to_string=True)
@@ -32,7 +85,7 @@ def test_diff_cmd(install_mockery, mock_fetch, mock_archive, mock_packages):
     # Calculate the comparison (c)
     c = spack.cmd.diff.compare_specs(specA, specB, to_string=True)
 
-    # these particular diffs should have the same length b/c thre aren't
+    # these particular diffs should have the same length b/c there aren't
     # any node differences -- just value differences.
     assert len(c["a_not_b"]) == len(c["b_not_a"])
 
@@ -45,10 +98,21 @@ def test_diff_cmd(install_mockery, mock_fetch, mock_archive, mock_packages):
     assert ["hash", "mpileaks %s" % specB.dag_hash()] in c["b_not_a"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
+def test_diff_runtimes(install_mockery, mock_fetch, mock_archive, mock_packages):
+    """Test that we can install two packages and diff them"""
+
+    specA = spack.concretize.concretize_one("mpileaks")
+    specB = specA.copy()
+    specB["gcc-runtime"].versions = spack.version.VersionList([spack.version.Version("0.0.0")])
+
+    # Specs should be the same as themselves
+    c = spack.cmd.diff.compare_specs(specA, specB, to_string=True)
+    assert ["version", "gcc-runtime 0.0.0"] in c["b_not_a"]
+
+
 def test_load_first(install_mockery, mock_fetch, mock_archive, mock_packages):
     """Test with and without the --first option"""
-    install_cmd("mpileaks")
+    install_cmd("--fake", "mpileaks")
 
     # Only one version of mpileaks will work
     diff_cmd("mpileaks", "mpileaks")
@@ -76,16 +140,16 @@ def test_load_first(install_mockery, mock_fetch, mock_archive, mock_packages):
         ["node", dep] in result["intersect"]
         for dep in ("mpileaks", "callpath", "dyninst", "libelf", "libdwarf", "mpich")
     )
+
     assert all(
-        len([diff for diff in result["intersect"] if diff[0] == attr]) == 6
+        len([diff for diff in result["intersect"] if diff[0] == attr]) == 9
         for attr in (
             "version",
             "node_target",
             "node_platform",
             "node_os",
-            "node_compiler",
-            "node_compiler_version",
             "node",
+            "package_hash",
             "hash",
         )
     )

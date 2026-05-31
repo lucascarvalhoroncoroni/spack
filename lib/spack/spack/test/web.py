@@ -1,26 +1,33 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 import collections
+import email.message
 import os
-import posixpath
-import sys
+import pathlib
+import pickle
+import ssl
+import urllib.error
+import urllib.request
+from typing import Dict
 
 import pytest
 
-import llnl.util.tty as tty
-
 import spack.config
+import spack.llnl.util.tty as tty
+import spack.mirrors.mirror
 import spack.paths
+import spack.url
 import spack.util.s3
+import spack.util.url as url_util
 import spack.util.web
-from spack.version import ver
+from spack.llnl.util.filesystem import working_dir
+from spack.version import Version
 
 
 def _create_url(relative_url):
-    web_data_path = posixpath.join(spack.paths.test_path, "data", "web")
-    return "file://" + posixpath.join(web_data_path, relative_url)
+    web_data_path = os.path.join(spack.paths.test_path, "data", "web")
+    return url_util.path_to_file_url(os.path.join(web_data_path, relative_url))
 
 
 root = _create_url("index.html")
@@ -30,8 +37,10 @@ page_2 = _create_url("2.html")
 page_3 = _create_url("3.html")
 page_4 = _create_url("4.html")
 
+root_with_fragment = _create_url("index_with_fragment.html")
+root_with_javascript = _create_url("index_with_javascript.html")
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
+
 @pytest.mark.parametrize(
     "depth,expected_found,expected_not_found,expected_text",
     [
@@ -92,54 +101,58 @@ def test_spider(depth, expected_found, expected_not_found, expected_text):
 def test_spider_no_response(monkeypatch):
     # Mock the absence of a response
     monkeypatch.setattr(spack.util.web, "read_from_url", lambda x, y: (None, None, None))
-    pages, links = spack.util.web.spider(root, depth=0)
+    pages, links, _, _ = spack.util.web._spider(root, collect_nested=False, _visited=set())
     assert not pages and not links
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
 def test_find_versions_of_archive_0():
-    versions = spack.util.web.find_versions_of_archive(root_tarball, root, list_depth=0)
-    assert ver("0.0.0") in versions
+    versions = spack.url.find_versions_of_archive(root_tarball, root, list_depth=0)
+    assert Version("0.0.0") in versions
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
 def test_find_versions_of_archive_1():
-    versions = spack.util.web.find_versions_of_archive(root_tarball, root, list_depth=1)
-    assert ver("0.0.0") in versions
-    assert ver("1.0.0") in versions
+    versions = spack.url.find_versions_of_archive(root_tarball, root, list_depth=1)
+    assert Version("0.0.0") in versions
+    assert Version("1.0.0") in versions
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
 def test_find_versions_of_archive_2():
-    versions = spack.util.web.find_versions_of_archive(root_tarball, root, list_depth=2)
-    assert ver("0.0.0") in versions
-    assert ver("1.0.0") in versions
-    assert ver("2.0.0") in versions
+    versions = spack.url.find_versions_of_archive(root_tarball, root, list_depth=2)
+    assert Version("0.0.0") in versions
+    assert Version("1.0.0") in versions
+    assert Version("2.0.0") in versions
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
 def test_find_exotic_versions_of_archive_2():
-    versions = spack.util.web.find_versions_of_archive(root_tarball, root, list_depth=2)
+    versions = spack.url.find_versions_of_archive(root_tarball, root, list_depth=2)
     # up for grabs to make this better.
-    assert ver("2.0.0b2") in versions
+    assert Version("2.0.0b2") in versions
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
 def test_find_versions_of_archive_3():
-    versions = spack.util.web.find_versions_of_archive(root_tarball, root, list_depth=3)
-    assert ver("0.0.0") in versions
-    assert ver("1.0.0") in versions
-    assert ver("2.0.0") in versions
-    assert ver("3.0") in versions
-    assert ver("4.5") in versions
+    versions = spack.url.find_versions_of_archive(root_tarball, root, list_depth=3)
+    assert Version("0.0.0") in versions
+    assert Version("1.0.0") in versions
+    assert Version("2.0.0") in versions
+    assert Version("3.0") in versions
+    assert Version("4.5") in versions
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
 def test_find_exotic_versions_of_archive_3():
-    versions = spack.util.web.find_versions_of_archive(root_tarball, root, list_depth=3)
-    assert ver("2.0.0b2") in versions
-    assert ver("3.0a1") in versions
-    assert ver("4.5-rc5") in versions
+    versions = spack.url.find_versions_of_archive(root_tarball, root, list_depth=3)
+    assert Version("2.0.0b2") in versions
+    assert Version("3.0a1") in versions
+    assert Version("4.5-rc5") in versions
+
+
+def test_find_versions_of_archive_with_fragment():
+    versions = spack.url.find_versions_of_archive(root_tarball, root_with_fragment, list_depth=0)
+    assert Version("5.0.0") in versions
+
+
+def test_find_versions_of_archive_with_javascript():
+    versions = spack.url.find_versions_of_archive(root_tarball, root_with_javascript, list_depth=0)
+    assert Version("5.0.0") in versions
 
 
 def test_get_header():
@@ -181,24 +194,38 @@ def test_get_header():
         spack.util.web.get_header(headers, "ContentLength")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows (yet)")
-def test_list_url(tmpdir):
-    testpath = str(tmpdir)
+def test_etag_parser():
+    # This follows rfc7232 to some extent, relaxing the quote requirement.
+    assert spack.util.web.parse_etag('"abcdef"') == "abcdef"
+    assert spack.util.web.parse_etag("abcdef") == "abcdef"
+
+    # No empty tags
+    assert spack.util.web.parse_etag("") is None
+
+    # No quotes or spaces allowed
+    assert spack.util.web.parse_etag('"abcdef"ghi"') is None
+    assert spack.util.web.parse_etag('"abc def"') is None
+    assert spack.util.web.parse_etag("abc def") is None
+
+
+def test_list_url(tmp_path: pathlib.Path):
+    testpath = str(tmp_path)
+    testpath_url = url_util.path_to_file_url(testpath)
 
     os.mkdir(os.path.join(testpath, "dir"))
 
-    with open(os.path.join(testpath, "file-0.txt"), "w"):
+    with open(os.path.join(testpath, "file-0.txt"), "w", encoding="utf-8"):
         pass
-    with open(os.path.join(testpath, "file-1.txt"), "w"):
+    with open(os.path.join(testpath, "file-1.txt"), "w", encoding="utf-8"):
         pass
-    with open(os.path.join(testpath, "file-2.txt"), "w"):
+    with open(os.path.join(testpath, "file-2.txt"), "w", encoding="utf-8"):
         pass
 
-    with open(os.path.join(testpath, "dir", "another-file.txt"), "w"):
+    with open(os.path.join(testpath, "dir", "another-file.txt"), "w", encoding="utf-8"):
         pass
 
     list_url = lambda recursive: list(
-        sorted(spack.util.web.list_url(testpath, recursive=recursive))
+        sorted(spack.util.web.list_url(testpath_url, recursive=recursive))
     )
 
     assert list_url(False) == ["file-0.txt", "file-1.txt", "file-2.txt"]
@@ -206,26 +233,25 @@ def test_list_url(tmpdir):
     assert list_url(True) == ["dir/another-file.txt", "file-0.txt", "file-1.txt", "file-2.txt"]
 
 
-class MockPages(object):
+class MockPages:
     def search(self, *args, **kwargs):
-        return [
-            {"Key": "keyone"},
-            {"Key": "keytwo"},
-            {"Key": "keythree"},
-        ]
+        return [{"Key": "keyone"}, {"Key": "keytwo"}, {"Key": "keythree"}]
 
 
-class MockPaginator(object):
+class MockPaginator:
     def paginate(self, *args, **kwargs):
         return MockPages()
 
 
 class MockClientError(Exception):
     def __init__(self):
-        self.response = {"Error": {"Code": "NoSuchKey"}}
+        self.response = {
+            "Error": {"Code": "NoSuchKey"},
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        }
 
 
-class MockS3Client(object):
+class MockS3Client:
     def get_paginator(self, *args, **kwargs):
         return MockPaginator()
 
@@ -241,19 +267,35 @@ class MockS3Client(object):
     def get_object(self, Bucket=None, Key=None):
         self.ClientError = MockClientError
         if Bucket == "my-bucket" and Key == "subdirectory/my-file":
-            return True
+            return {"ResponseMetadata": {"HTTPHeaders": {}}}
+        raise self.ClientError
+
+    def head_object(self, Bucket=None, Key=None):
+        self.ClientError = MockClientError
+        if Bucket == "my-bucket" and Key == "subdirectory/my-file":
+            return {"ResponseMetadata": {"HTTPHeaders": {}}}
         raise self.ClientError
 
 
-def test_gather_s3_information(monkeypatch, capfd):
-    mock_connection_data = {
-        "access_token": "AAAAAAA",
-        "profile": "SPacKDeV",
-        "access_pair": ("SPA", "CK"),
-        "endpoint_url": "https://127.0.0.1:8888",
-    }
+def test_gather_s3_information(monkeypatch):
+    mirror = spack.mirrors.mirror.Mirror(
+        {
+            "fetch": {
+                "access_token": "AAAAAAA",
+                "profile": "SPacKDeV",
+                "access_pair": ("SPA", "CK"),
+                "endpoint_url": "https://127.0.0.1:8888",
+            },
+            "push": {
+                "access_token": "AAAAAAA",
+                "profile": "SPacKDeV",
+                "access_pair": ("SPA", "CK"),
+                "endpoint_url": "https://127.0.0.1:8888",
+            },
+        }
+    )
 
-    session_args, client_args = spack.util.s3.get_mirror_s3_connection_info(mock_connection_data)
+    session_args, client_args = spack.util.s3.get_mirror_s3_connection_info(mirror, "push")
 
     # Session args are used to create the S3 Session object
     assert "aws_session_token" in session_args
@@ -273,10 +315,10 @@ def test_gather_s3_information(monkeypatch, capfd):
 def test_remove_s3_url(monkeypatch, capfd):
     fake_s3_url = "s3://my-bucket/subdirectory/mirror"
 
-    def mock_create_s3_session(url, connection={}):
+    def get_s3_session(url, method="fetch"):
         return MockS3Client()
 
-    monkeypatch.setattr(spack.util.s3, "create_s3_session", mock_create_s3_session)
+    monkeypatch.setattr(spack.util.web, "get_s3_session", get_s3_session)
 
     current_debug_level = tty.debug_level()
     tty.set_debug(1)
@@ -291,11 +333,11 @@ def test_remove_s3_url(monkeypatch, capfd):
     assert "Deleted keytwo" in err
 
 
-def test_s3_url_exists(monkeypatch, capfd):
-    def mock_create_s3_session(url, connection={}):
+def test_s3_url_exists(monkeypatch):
+    def get_s3_session(url, method="fetch"):
         return MockS3Client()
 
-    monkeypatch.setattr(spack.util.s3, "create_s3_session", mock_create_s3_session)
+    monkeypatch.setattr(spack.util.s3, "get_s3_session", get_s3_session)
 
     fake_s3_url_exists = "s3://my-bucket/subdirectory/my-file"
     assert spack.util.web.url_exists(fake_s3_url_exists)
@@ -307,3 +349,233 @@ def test_s3_url_exists(monkeypatch, capfd):
 def test_s3_url_parsing():
     assert spack.util.s3._parse_s3_endpoint_url("example.com") == "https://example.com"
     assert spack.util.s3._parse_s3_endpoint_url("http://example.com") == "http://example.com"
+
+
+def test_detailed_http_error_pickle(tmp_path: pathlib.Path):
+    (tmp_path / "response").write_text("response")
+
+    headers = email.message.Message()
+    headers.add_header("Content-Type", "text/plain")
+
+    # Use a temporary file object as a response body
+    with open(str(tmp_path / "response"), "rb") as f:
+        error = spack.util.web.DetailedHTTPError(
+            urllib.request.Request("http://example.com"), 404, "Not Found", headers, f
+        )
+
+        deserialized = pickle.loads(pickle.dumps(error))
+
+    assert isinstance(deserialized, spack.util.web.DetailedHTTPError)
+    assert deserialized.code == 404
+    assert deserialized.filename == "http://example.com"
+    assert deserialized.reason == "Not Found"
+    assert str(deserialized.info()) == str(headers)
+    assert str(deserialized) == str(error)
+
+
+@pytest.fixture()
+def ssl_scrubbed_env(mutable_config, monkeypatch):
+    """clear out environment variables that could give false positives for SSL Cert tests"""
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.delenv("CURL_CA_BUNDLE", raising=False)
+    spack.config.set("config:verify_ssl", True)
+
+
+@pytest.mark.parametrize(
+    "cert_path,cert_creator",
+    [
+        pytest.param(
+            lambda base_path: os.path.join(base_path, "mock_cert.crt"),
+            lambda cert_path: open(cert_path, "w", encoding="utf-8").close(),
+            id="cert_file",
+        ),
+        pytest.param(
+            lambda base_path: os.path.join(base_path, "mock_cert"),
+            lambda cert_path: os.mkdir(cert_path),
+            id="cert_directory",
+        ),
+    ],
+)
+def test_ssl_urllib(
+    cert_path, cert_creator, tmp_path: pathlib.Path, ssl_scrubbed_env, mutable_config, monkeypatch
+):
+    """
+    create a proposed cert type and then verify that they exist inside ssl's checks
+    """
+    spack.config.set("config:url_fetch_method", "urllib")
+
+    def mock_verify_locations(self, cafile, capath, cadata):
+        """overwrite ssl's verification to simply check for valid file/path"""
+        assert cafile or capath
+        if cafile:
+            assert os.path.isfile(cafile)
+        if capath:
+            assert os.path.isdir(capath)
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", mock_verify_locations)
+
+    with working_dir(str(tmp_path)):
+        mock_cert = cert_path(str(tmp_path))
+        cert_creator(mock_cert)
+        spack.config.set("config:ssl_certs", mock_cert)
+
+        assert mock_cert == spack.config.get("config:ssl_certs", None)
+
+        ssl_context = spack.util.web.ssl_create_default_context()
+        assert ssl_context.verify_mode == ssl.CERT_REQUIRED
+
+
+@pytest.mark.parametrize("cert_exists", [True, False], ids=["exists", "missing"])
+def test_ssl_curl_cert_file(
+    cert_exists, tmp_path: pathlib.Path, ssl_scrubbed_env, mutable_config, monkeypatch
+):
+    """
+    Assure that if a valid cert file is specified curl executes
+    with CURL_CA_BUNDLE in the env
+    """
+    spack.config.set("config:url_fetch_method", "curl")
+    with working_dir(str(tmp_path)):
+        mock_cert = str(tmp_path / "mock_cert.crt")
+        spack.config.set("config:ssl_certs", mock_cert)
+        if cert_exists:
+            open(mock_cert, "w", encoding="utf-8").close()
+            assert os.path.isfile(mock_cert)
+        curl = spack.util.web.require_curl()
+
+        # arbitrary call to query the run env
+        dump_env: Dict[str, str] = {}
+        curl("--help", output=str, _dump_env=dump_env)
+
+        if cert_exists:
+            assert dump_env["CURL_CA_BUNDLE"] == mock_cert
+        else:
+            assert "CURL_CA_BUNDLE" not in dump_env
+
+
+@pytest.mark.parametrize(
+    "error_code,num_errors,max_retries,expect_failure",
+    [
+        (500, 2, 5, False),  # transient, enough retries
+        (500, 2, 2, True),  # transient, not enough retries
+        (429, 2, 5, False),  # rate limit, enough retries
+        (404, 1, 5, True),  # not transient, never retried
+    ],
+)
+def test_retry_on_transient_error(error_code, num_errors, max_retries, expect_failure, mock_sleep):
+    import urllib.error
+
+    call_count = 0
+
+    def flaky_func():
+        nonlocal call_count
+        call_count += 1
+        if call_count <= num_errors:
+            raise urllib.error.HTTPError(
+                url="https://example.com", code=error_code, msg="err", hdrs={}, fp=None
+            )
+        return "ok"
+
+    retrying = spack.util.web.retry_on_transient_error(
+        flaky_func, spack.util.web.Retry(total=max_retries)
+    )
+
+    if expect_failure:
+        with pytest.raises(urllib.error.HTTPError):
+            retrying()
+    else:
+        assert retrying() == "ok"
+        assert mock_sleep.times == [2**i for i in range(num_errors)]
+
+
+def test_retry_on_transient_error_non_oserror(mock_sleep):
+    """Non-OSError exceptions with transient names (e.g. botocore) should be retried."""
+
+    class ResponseStreamingError(Exception):
+        pass
+
+    call_count = 0
+
+    def flaky_func():
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise ResponseStreamingError("IncompleteRead")
+        return "ok"
+
+    retrying = spack.util.web.retry_on_transient_error(flaky_func)
+
+    assert retrying() == "ok"
+    assert call_count == 3
+    assert mock_sleep.times == [1, 2]
+
+
+def test_retry(monkeypatch, mock_sleep):
+
+    retry = spack.util.web.Retry(total=5, backoff_factor=1.0, backoff_jitter=1.0, backoff_max=1)
+
+    # No early exit
+    count = 0
+    for _ in retry:
+        assert retry.count == count
+        count += 1
+
+    assert count == 5
+    assert retry.count == 5
+    assert mock_sleep.count == 4
+
+    # Exit early on last attempt
+    count = 0
+    for _ in retry:
+        assert retry.count == count
+        count += 1
+
+        # Skip the last increment step
+        if retry.is_last_attempt():
+            break
+
+    assert count == 5
+    assert retry.count == 4
+    assert mock_sleep.count == 8
+
+    count = 0
+    # Exit early on first attempt
+    for _ in retry:
+        count += 1
+        # Never increment retry, skips sleep
+        break
+
+    assert count == 1
+    assert retry.count == 0
+    assert mock_sleep.count == 8
+
+    count = 0
+    # Exit early on second attempt
+    for _ in retry:
+        count += 1
+        if count == 2:
+            break
+
+    assert count == 2
+    assert retry.count == 1
+    assert mock_sleep.count == 9
+
+
+def test_retry_on_transient_error_reuse(mock_sleep):
+    """A shared Retry instance must be reset on each wrapper invocation."""
+    call_count = 0
+
+    def flaky_func():
+        nonlocal call_count
+        call_count += 1
+        if call_count % 2 != 0:
+            raise urllib.error.HTTPError(
+                url="https://example.com", code=503, msg="err", hdrs={}, fp=None
+            )
+        return "ok"
+
+    retry = spack.util.web.Retry(total=2)
+    retrying = spack.util.web.retry_on_transient_error(flaky_func, retry)
+
+    assert retrying() == "ok"
+    assert retrying() == "ok"

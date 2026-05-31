@@ -1,28 +1,25 @@
-# Copyright 2013-2022 Lawrence Livermore National Security, LLC and other
-# Spack Project Developers. See the top-level COPYRIGHT file for details.
+# Copyright Spack Project Developers. See COPYRIGHT file for details.
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 import os
-import sys
+import pathlib
 
 import pytest
 
-from llnl.util.filesystem import mkdirp, touch, working_dir
-
+import spack.concretize
 import spack.config
-import spack.repo
 from spack.fetch_strategy import SvnFetchStrategy
-from spack.spec import Spec
+from spack.llnl.util.filesystem import mkdirp, touch, working_dir
 from spack.stage import Stage
 from spack.util.executable import which
-from spack.version import ver
+from spack.version import Version
 
 pytestmark = [
     pytest.mark.skipif(
         not which("svn") or not which("svnadmin"), reason="requires subversion to be installed"
     ),
-    pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows"),
+    pytest.mark.not_on_windows("does not run on windows"),
 ]
 
 
@@ -43,8 +40,8 @@ def test_fetch(type_of_test, secure, mock_svn_repository, config, mutable_mock_r
     h = mock_svn_repository.hash
 
     # Construct the package under test
-    s = Spec("svn-test").concretized()
-    monkeypatch.setitem(s.package.versions, ver("svn"), t.args)
+    s = spack.concretize.concretize_one("svn-test")
+    monkeypatch.setitem(s.package.versions, Version("svn"), t.args)
 
     # Enter the stage directory and check some properties
     with s.package.stage:
@@ -73,9 +70,9 @@ def test_fetch(type_of_test, secure, mock_svn_repository, config, mutable_mock_r
             assert h() == t.revision
 
 
-def test_svn_extra_fetch(tmpdir):
+def test_svn_extra_fetch(tmp_path: pathlib.Path):
     """Ensure a fetch after downloading is effectively a no-op."""
-    testpath = str(tmpdir)
+    testpath = str(tmp_path)
 
     fetcher = SvnFetchStrategy(svn="file:///not-a-real-svn-repo")
     assert fetcher is not None
